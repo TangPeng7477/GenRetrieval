@@ -141,6 +141,23 @@ def main():
         cells.append(f"{tr:,.0f}s" if isinstance(tr, (int, float)) else "n/a")
     lines.append(f"| 训练/导出总耗时 | " + " | ".join(cells) + " |")
 
+    # 读法提醒全部由数据生成：跨域可能出现排序反转，写死结论会出错
+    # （踩坑：VG 域曾因硬编码 "LCP RQ-VAE 更好" 与本表实测方向相反）
+    def _k(m, v):
+        u = data[m]["_ev"][v].get("uniqueness") or {}
+        st = (data[m]["_ev"][v].get("structure") or {}).get("lcp") or {}
+        f = data[m].get("sid_" + v) or {}
+        g = lambda x, y: x if isinstance(x, (int, float)) else y
+        return dict(icr=g(u.get("icr"), f.get("icr")), r2=f.get("recon_r2"),
+                    lcp=g(st.get("lcp_ratio"), None))
+
+    rA, rB = _k(rqvae, "raw"), _k(rkm, "raw")
+    sA, sB = _k(rqvae, "sk"), _k(rkm, "sk")
+    chA = (data[rqvae].get("sinkhorn_cost") or {}).get("changed_ratio")
+    chB = (data[rkm].get("sinkhorn_cost") or {}).get("changed_ratio")
+    tA = (data[rqvae].get("train") or {}).get("elapsed_sec")
+    tB = (data[rkm].get("train") or {}).get("elapsed_sec")
+
     lines.append("")
     lines.append("## 读法提醒（诚实边界）")
     lines.append("")
@@ -148,12 +165,29 @@ def main():
                  "的重建（encoder 32 维瓶颈 + 5000 轮训练学出来的补偿）；RQ-KMeans 无 decoder，"
                  "是码本和向量在输入空间的直接量化误差。但两者都回答同一个问题——"
                  "SID 里还剩多少商品语义，且都是尺度无关的 R²，可作参考性对照。")
-    lines.append("- RQ-KMeans 的 raw ICR 显著更低（beam=1 贪心残差量化在 1024 维更易碰撞），"
-                 "因此 Sinkhorn 需要改写约 27% 物品的码（RQ-VAE 仅 6.5%）——这是它 LCP 下降更多的主因。")
-    lines.append("- rqkmeans 的 Sinkhorn 在 21 个物品上早停（最大冲突组=3），ICR 0.9996；"
-                 "RQ-VAE 为 0.9997。两者都未到 1.0，属正常。")
-    lines.append("- 结论落点：**ICR 打平、LCP RQ-VAE 更好、耗时差 600 倍**。"
-                 "最终裁判是下游 SFT 的生成指标，本表只做离线代理筛选。")
+    if rA["icr"] is not None and rB["icr"] is not None:
+        icr_win = rqvae if rA["icr"] >= rB["icr"] else rkm
+        r2_win = rqvae if (rA["r2"] or 0) >= (rB["r2"] or 0) else rkm
+        lines.append(f"- **主判据 = raw ICR + 重建 R²**（两域上排序一致，可跨域横比）。"
+                     f"raw ICR：{rqvae} {rA['icr']:.4f} vs {rkm} {rB['icr']:.4f}"
+                     f"（差 {abs(rA['icr'] - rB['icr']) * 100:.2f} pp，**{icr_win} 占优**）；"
+                     f"重建 R²：{rA['r2']:.4f} vs {rB['r2']:.4f}（**{r2_win} 占优**）。")
+    if rA["lcp"] and rB["lcp"]:
+        lcp_win = rqvae if rA["lcp"] >= rB["lcp"] else rkm
+        lines.append(f"- ⚠️ **LCP ratio 只作参考，不作跨域判据**：本次 {rqvae} {rA['lcp']:.2f} "
+                     f"vs {rkm} {rB['lcp']:.2f}（**{lcp_win} 占优**）。两个读法陷阱——"
+                     f"① 分母（随机基线）仅 ~0.005 量级，比值被极小分母放大，微小差异即被吹成几十个点；"
+                     f"② 跨域排序可能反转（同一配方在 I&S 与 VG 上名次不同）。"
+                     f"故跨域结论一律看 raw ICR + R²。")
+    if isinstance(chA, (int, float)) and isinstance(chB, (int, float)):
+        lines.append(f"- Sinkhorn 代价由 raw 碰撞量决定：{rqvae} 改码 {chA:.2%}"
+                     f"（ICR {rA['icr']:.4f}→{sA['icr']:.4f}），"
+                     f"{rkm} 改码 {chB:.2%}（ICR {rB['icr']:.4f}→{sB['icr']:.4f}）。"
+                     f"raw ICR 更低者（beam=1 贪心残差量化在 1024 维更易碰撞）需改写更多码；"
+                     f"两者 sk ICR 均未到 1.0，残余碰撞 = 逐位重复 embedding，数学上不可分。")
+    if isinstance(tA, (int, float)) and isinstance(tB, (int, float)) and tB:
+        lines.append(f"- 耗时：{rqvae} {tA:,.0f}s vs {rkm} {tB:,.0f}s（**{tA / tB:.0f}×**）。"
+                     f"最终裁判是下游 SFT 的生成指标，本表只做离线代理筛选。")
 
     md = "\n".join(lines) + "\n"
     out_md = os.path.join(root, "compare_rqkmeans.md")
