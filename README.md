@@ -93,7 +93,7 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
 训练曲线（三条线分离即"rate-distortion 记账位移"，**总损失后期回升但重建仍在降**，
 所以按碰撞率而非总损失选 ckpt）：
 
-![RQ-VAE 训练曲线三相结构](docs/figures/train_curve_3phase.png)
+![RQ-VAE 训练曲线三相结构](docs/figures/train_curve_3phase.svg)
 
 ### 3.3 为什么不消解碰撞（语义桶）
 

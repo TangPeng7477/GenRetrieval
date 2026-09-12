@@ -1,0 +1,59 @@
+<svg viewBox="0 0 680 380" width="680" height="380" xmlns="http://www.w3.org/2000/svg" role="img" font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+<title>RQ-VAE 训练损失曲线（5000 轮）</title>
+<desc>重建损失从 9.74 单调降到 3.43，量化损失从 0.05 升到 5.42，总损失先降到 5.96 后回升到 8.85，呈三相结构。</desc>
+<rect x="0" y="0" width="680" height="380" fill="#FFFFFF"/>
+<text x="34" y="24" font-size="14" font-weight="500" fill="#2C2C2A">RQ-VAE 训练曲线：总损失回升，但重建一直在降</text>
+<text x="34" y="42" font-size="11.5" fill="#888780">Amazon I&amp;S · gate 融合 + k-means 预初始化(8192) · 5000 轮 · 纵轴损失 ×10⁻⁴ · 横轴轮次（对数）</text>
+
+<rect x="34" y="52" width="10" height="3" rx="1.5" fill="#534AB7"/>
+<text x="49" y="57" font-size="11.5" fill="#5F5E5A">总损失</text>
+<rect x="106" y="52" width="10" height="3" rx="1.5" fill="#0F6E56"/>
+<text x="121" y="57" font-size="11.5" fill="#5F5E5A">重建损失 recon</text>
+<rect x="223" y="52" width="10" height="3" rx="1.5" fill="#BA7517"/>
+<text x="238" y="57" font-size="11.5" fill="#5F5E5A">量化损失 rq</text>
+
+<line x1="62" y1="280" x2="646" y2="280" stroke="#D3D1C7" stroke-width="1"/>
+<line x1="62" y1="238" x2="646" y2="238" stroke="#EFEDE6" stroke-width="1"/>
+<line x1="62" y1="196" x2="646" y2="196" stroke="#EFEDE6" stroke-width="1"/>
+<line x1="62" y1="154" x2="646" y2="154" stroke="#EFEDE6" stroke-width="1"/>
+<line x1="62" y1="112" x2="646" y2="112" stroke="#EFEDE6" stroke-width="1"/>
+<line x1="62" y1="70" x2="646" y2="70" stroke="#EFEDE6" stroke-width="1"/>
+<text x="54" y="284" font-size="11" fill="#888780" text-anchor="end">0</text>
+<text x="54" y="242" font-size="11" fill="#888780" text-anchor="end">2</text>
+<text x="54" y="200" font-size="11" fill="#888780" text-anchor="end">4</text>
+<text x="54" y="158" font-size="11" fill="#888780" text-anchor="end">6</text>
+<text x="54" y="116" font-size="11" fill="#888780" text-anchor="end">8</text>
+<text x="54" y="74" font-size="11" fill="#888780" text-anchor="end">10</text>
+
+<polyline points="62,279.0 137.3,268.7 157.1,267.2 172.3,278.7 219.9,279.4 267.4,278.1 330.2,274.3 377.8,270.8 397.3,265.9 425.3,257.5 453.6,245.1 488.1,229.0 510.1,219.7 535.6,209.4 566.7,196.4 583.2,188.9 611.0,176.1 630.7,169.8 646,166.2" fill="none" stroke="#BA7517" stroke-width="2.2" stroke-linejoin="round"/>
+<polyline points="62,75.5 137.3,88.5 157.1,105.9 172.3,111.6 219.9,121.7 267.4,138.3 330.2,153.6 377.8,163.9 397.3,168.9 425.3,177.1 453.6,185.7 488.1,192.6 510.1,196.2 535.6,200.0 566.7,203.1 583.2,204.0 611.0,204.9 630.7,205.1 646,206.0" fill="none" stroke="#0F6E56" stroke-width="2.2" stroke-linejoin="round"/>
+<polyline points="62,74.4 137.3,77.1 157.1,93.1 172.3,110.3 219.9,121.0 267.4,136.4 330.2,147.9 377.8,154.6 397.3,154.8 425.3,154.6 453.6,150.9 488.1,141.6 510.1,135.9 535.6,129.4 566.7,119.6 583.2,112.8 611.0,101.9 630.7,96.9 646,94.2" fill="none" stroke="#534AB7" stroke-width="2.6" stroke-linejoin="round"/>
+
+<line x1="377.8" y1="70" x2="377.8" y2="280" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="488.1" y1="70" x2="488.1" y2="280" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3 3"/>
+
+<circle cx="377.8" cy="154.6" r="3.2" fill="#FFFFFF" stroke="#534AB7" stroke-width="2"/>
+<line x1="377.8" y1="151" x2="377.8" y2="128" stroke="#534AB7" stroke-width="1" stroke-dasharray="2 2"/>
+<text x="385" y="126" font-size="11" fill="#534AB7">总损失触底 5.96</text>
+<text x="385" y="139" font-size="11" fill="#888780">ep100 附近</text>
+
+<text x="642" y="88" font-size="11.5" fill="#534AB7" text-anchor="end">总损失 8.85</text>
+<text x="642" y="162" font-size="11.5" fill="#BA7517" text-anchor="end">量化 5.42</text>
+<text x="642" y="216" font-size="11.5" fill="#0F6E56" text-anchor="end">重建 3.43</text>
+
+<text x="62" y="298" font-size="11" fill="#888780" text-anchor="middle">1</text>
+<text x="219.9" y="298" font-size="11" fill="#888780" text-anchor="middle">10</text>
+<text x="377.8" y="298" font-size="11" fill="#888780" text-anchor="middle">100</text>
+<text x="535.6" y="298" font-size="11" fill="#888780" text-anchor="middle">1000</text>
+<text x="646" y="298" font-size="11" fill="#888780" text-anchor="middle">5000</text>
+
+<rect x="62" y="308" width="315.8" height="4" rx="2" fill="#D3D1C7"/>
+<rect x="377.8" y="308" width="110.3" height="4" rx="2" fill="#85B7EB"/>
+<rect x="488.1" y="308" width="157.9" height="4" rx="2" fill="#EF9F27"/>
+<text x="62" y="326" font-size="11" fill="#5F5E5A">阶段一 · 码本未激活：recon 主导下滑，rq≈0</text>
+<text x="377.8" y="326" font-size="11" fill="#185FA5">阶段二 · 码本接管</text>
+<text x="488.1" y="326" font-size="11" fill="#854F0B">阶段三 · 记账位移：recon↓ rq↑ 总损失回升</text>
+
+<text x="34" y="350" font-size="11" fill="#5F5E5A">读数：重建 9.74 → 3.43（−65%，单调下降）；量化 0.05 → 5.42（单调上升，encoder 把 latent 拉远以换取更好重建）</text>
+<text x="34" y="368" font-size="11" fill="#5F5E5A">含义：总损失后段回升是 rate-distortion 的记账位移，不是过拟合 → 按碰撞率选 ckpt（ep4950），而不是按总损失</text>
+</svg>
