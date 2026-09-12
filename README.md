@@ -24,7 +24,7 @@ SID 的质量决定了这件事的上限——同一个 SID 下的物品应当�
 1. **多模态融合 SID**：文本（Qwen3-Embedding-0.6B）+ 图像（SigLIP）经**门控融合**成单向量，
    再送 RQ-VAE 做 3 层残差量化。融合阶段用**用户行为共现**做 InfoNCE 监督，
    使"会被一起买的物品在向量空间里靠近"——这正是 SID 需要的性质。
-2. **SID 质量三层评估体系**（ICR / 保真度 / 检索结构），所有选型用数字裁决，不靠直觉。
+2. **SID 质量三层评估体系**（ICR / 保真度 / 检索结构，指标定义与公式见 §3.0），所有选型用数字裁决，不靠直觉。
 3. **碰撞即语义桶**：不做 Sinkhorn 碰撞消解，同码物品整桶召回，消歧交给下游排序
    （依据：碰撞组实拍 + Snap《Semantic IDs for Recommender Systems at Snapchat》的线上实践）。
 
@@ -65,6 +65,18 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
 
 ## 3. 关键结果（I&S，N=25,847）
 
+### 3.0 指标定义与公式（各指标首次出现处给出；完整版见 [docs/SID_PIPELINE.md §0.1](docs/SID_PIPELINE.md)）
+
+| 指标 | 定义与公式 | 本项目定版读数 |
+|---|---|---|
+| **Recall@K**（共现检索，融合阶段代理指标） | `R@K = 1/Q · Σ_q 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]`：按融合向量余弦取 Top-K（排除自身），Gold = 留出共现伙伴，Q = 3,000 个 query；随机基线 `≈ avg_pos · K / N` | R@10 = 0.1100（随机基线 0.003） |
+| **ICR**（唯一码率） | `ICR = 不同 SID 元组数 / N`，碰撞率 `= 1 − ICR` | 0.9582 |
+| **LCP ratio**（前缀语义保持，选型主指标） | `mean_NN lcp(i,j) ÷ mean_随机对 lcp(i,j)`；`lcp` = 两个 SID 的最长公共前缀层数；随机基线恒为 1 | 222.1 |
+| **prefix cohesion**（前缀内聚比） | 同前缀组内两两余弦均值 ÷ 随机分组（5 次置换）的同值 | prefix-1 = 2.086 |
+| **重建 MSE / R²**（量化保真度） | `MSE = 1/(N·D) · Σ‖x̂ − x‖²`，`R² = 1 − MSE / Var(x)` | R² = 0.6530 |
+| **L0 死码率** | `dead_l = 1 − 第 l 层被用到的码数 / K`，K = 256 | 0% |
+| **HR@K / NDCG@K**（端到端，SFT/RL 阶段） | `HR@K = 1/U · Σ_u 1[rank_u ≤ K]`；`NDCG@K = 1/U · Σ_u 1[rank_u ≤ K] / log₂(rank_u + 1)`（单正样本 ⇒ IDCG = 1） | 见 §3.4 V0 基线 |
+
 ### 3.1 融合：监督融合才是增益来源（同一留出集 80,079 对）
 
 | 模式 | R@10 | R@50 | R@100 | vs 纯文本 |
@@ -74,7 +86,7 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
 | mlp | 0.1013 | 0.2693 | 0.3623 | +22% |
 | **gate（定版）** | **0.1100** | **0.2787** | **0.3820** | **+33%** |
 
-随机基线 R@10 = 0.003。
+随机基线 `R_rand@K ≈ avg_pos · K / N = 7.88 × 10 / 25,847 = 0.003`（定义见 §3.0）。
 
 ### 3.2 SID：定版配置 `gate + init8192 + 5000 轮`
 
@@ -86,7 +98,7 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
 | gate + 全量初始化 | 0.9567 | 212.7 | 0.6468 | 8.6% |
 | gate + 训练期 Sinkhorn | 0.9537 | 205.5 | 0.6427 | 4.3% |
 
-- **LCP ratio** = 语义近邻对的 SID 前缀长度 ÷ 随机对（random 的 222 倍）→ 前缀层次结构强。
+- **LCP ratio** = 语义近邻对的 SID 前缀长度 ÷ 随机对（random 的 222 倍，公式见 §3.0）→ 前缀层次结构强。
 - 对照 **RQ-KMeans（MiniOneRec 原版 FAISS-RQ，同一 embedding、同一 Sinkhorn）**：
   raw ICR 0.8395、LCP 175.8、改码 27.06%（RQ-VAE 只需 6.54%）→ 维持 RQ-VAE。
 
@@ -174,7 +186,7 @@ MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
 | 文档 | 内容 |
 |---|---|
 | **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)** | **SID 唯一入口**：参考方法综述 + 本项目实现与知识点 + 探索过程全记录 + 定版配方（新读者从这进） |
-| [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md) | 知识点与机理总览（RQ-VAE / Sinkhorn / 死码 / 指标口径 + FAQ） |
+| [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md) | 知识点与机理总览（RQ-VAE / Sinkhorn / 死码 / **指标口径总表（含公式）** + FAQ） |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | 从零跑通（环境 → 数据 → SID → 训练） |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |

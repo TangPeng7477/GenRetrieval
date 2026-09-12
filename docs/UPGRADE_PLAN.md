@@ -9,9 +9,9 @@
 | 里程碑 | 状态 | 交付 |
 |---|---|---|
 | M1 数据（Amazon23 I&S + VG，图文 100%/99.9% 可得） | ✅ 完成 | `docs/DATASET.md` |
-| M1 多模态编码 + 融合 | ✅ 完成 | 定版 `gate_e60`（R@10 0.1100，vs 纯文本 +33%） |
+| M1 多模态编码 + 融合 | ✅ 完成 | 定版 `gate_e60`（R@10 0.1100，vs 纯文本 +33%；指标定义见 §4.5） |
 | M2 SID 构建（RQ-VAE） | ✅ 完成 | **定版配方 = gate + `--init_samples 8192` + 5000 轮 + `sid_raw`（语义桶）** |
-| M2 SID 质量评估 | ✅ 完成 | 三件套（ICR 0.9582 / LCP 222.1 / R² 0.6530 / L0 死码 0%） |
+| M2 SID 质量评估 | ✅ 完成 | 三件套（ICR 0.9582 / LCP 222.1 / R² 0.6530 / L0 死码 0%；公式见 §4.5） |
 | M3/M4 基座与 SFT | ⏳ 待启动 | — |
 | M5 RL | ⏳ 待启动 | — |
 
@@ -232,11 +232,14 @@ E_init[<a_i>] = W · C_l[i] + b,   W ∈ R^{d_llm × e_dim}
 
 ### 4.5 SID 质量评估三件套（从 esci 项目迁移，新增 `rq/eval_sid.py`）
 
-| 层 | 指标 | 含义 |
+| 层 | 指标（定义与公式） | 含义 |
 |---|---|---|
-| uniqueness | ICR、碰撞率、per-layer entropy | SID 是否唯一、是否死码 |
-| fidelity | reconstruction MSE、R² | 量化损失（RQ-VAE / KMeans 直接可比） |
-| retrieval structure | LCP、prefix cohesion vs random | SID 前缀是否语义聚类 |
+| uniqueness | **ICR** `= 不同 SID 元组数 / N`，碰撞率 `= 1 − ICR`；**per-layer entropy** `H_l = −Σ_k p_{l,k} log p_{l,k}`（归一化 `H_l / log K`，K = 256）、死码率 `dead_l = 1 − 该层用过的码数 / K` | SID 是否唯一、是否死码 |
+| fidelity | **reconstruction MSE** `= 1/(N·D) · Σ_i ‖ x̂_i − x_i ‖²`，`x̂_i = Dec(Σ_l C_l[c_{i,l}])`；**R²** `= 1 − MSE / Var(x)` | 量化损失（RQ-VAE / KMeans 直接可比） |
+| retrieval structure | **LCP** `lcp(i,j) = Σ_{l=0}^{L-1} Π_{t≤l} 1[c_{i,t} = c_{j,t}]`，**LCP ratio** = 近邻对均值 ÷ 随机对均值（基线 ≡ 1）；**prefix cohesion** = 同前缀组内两两余弦均值 ÷ 随机分组同值 | SID 前缀是否语义聚类 |
+
+> 融合侧的共现检索 `R@K = 1/Q · Σ_q 1[Top-K(q) ∩ Gold(q) ≠ ∅]`（随机基线 `≈ avg_pos · K / N`）、
+> 端到端 `HR@K / NDCG@K` 的定义与公式见 **§8** 与 `docs/SID_PIPELINE.md §0.1`。
 
 **消融矩阵**（M2 交付）：{纯文本, 融合} × {RQ-VAE, RQ-KMeans, FAISS-RQ(+last-layer Sinkhorn)} × {2/3/4 层}，其中 {纯文本 × RQ-VAE × 3 层} 为 V0' 锚点。每次 SID 变更先过三件套，再进昂贵的 SFT。
 
@@ -345,7 +348,11 @@ L = L_GRPO(student; 分层奖励)
 
 ## 8. 评估体系（M6）
 
-- 主指标：HR@1/5/10、NDCG@10、MRR（beam=10，约束解码，与 V0 完全同口径）；
+- 主指标（定义与公式，实现见 `utility.py: calculate_hit`）：
+  - **HR@K** = `1/U · Σ_u 1[ rank_u ≤ K ]` —— 真实下一个物品是否进 top-K；
+  - **NDCG@K** = `1/U · Σ_u 1[ rank_u ≤ K ] / log₂(rank_u + 1)` —— 单正样本 ⇒ IDCG = 1；
+  - **MRR** = `1/U · Σ_u 1 / rank_u`（未命中记 0）—— 对"第一个命中项的位置"更敏感；
+  - K = 1/5/10，beam=10，约束解码，与 V0 完全同口径；
 - 新增：
   - **样本效率曲线**：达到 V0 最终 NDCG@10 所需 step 数（衡量语义初始化/OPD 的训练效率收益）；
   - **覆盖率/多样性**：推荐分布的 catalog coverage、gini 系数（去流行度偏置奖励的效果验证）；

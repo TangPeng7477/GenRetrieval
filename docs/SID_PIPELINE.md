@@ -30,7 +30,84 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
   bash scripts/multimodal/run_sid_exp.sh IandS 5000 "gate"
 ```
 
-**最终 SID 质量（`gate__init8192`，N=25,847）**
+### 0.1 指标定义与公式（全文统一口径）
+
+> 本项目所有选型都由数字裁决，所以先把指标口径钉死。下面每个公式都与
+> `rq/eval_sid.py`、`scripts/multimodal/fuse_embeddings.py`、`utility.py` 的实现逐行对齐；
+> **后文各章在指标首次出现时只给读法，不再重复公式**。
+>
+> 记号：物品集 I，N = |I| = 25,847；物品 i 的 SID 是 L=3 层 token 元组
+> `c_i = (c_{i,0}, c_{i,1}, c_{i,2})`，每层码本大小 K = 256；
+> 融合向量 `x_i ∈ R^1024`（structure/fidelity 评估前做 L2 归一化），重建向量 `x̂_i`。
+
+**A 组 · 唯一性 uniqueness**（`eval_sid.py: uniqueness_metrics`）
+
+```
+ICR（唯一码率）    ICR = |{ c_i : i ∈ I }| / N              # 不同 SID 元组的个数 ÷ 物品数
+碰撞率             collision_rate = 1 - ICR
+碰撞账本           把共享同一 SID 的物品记为一组 g：组数 G、涉及物品数 Σ_g |g|、
+                   桶均 = (Σ_{g:|g|>1} |g|) / |{g:|g|>1}|、最大组 = max_g |g|
+per-layer 死码率   dead_l = 1 - |{ c_{i,l} : i ∈ I }| / K   # 第 l 层从未被用到的码占比
+归一化熵           H_l = -Σ_k p_{l,k} log p_{l,k}，H_l^norm = H_l / log K
+                   （p_{l,k} = 第 l 层第 k 个码的被选频率）
+perplexity         ppl_l = exp(H_l)                         # 等效"用码数"，上界 K
+```
+
+**B 组 · 保真度 fidelity**（`eval_sid.py: fidelity_metrics`，需 ckpt）
+
+```
+重建 MSE           MSE = 1/(N·D) · Σ_i ‖ x̂_i - x_i ‖²              （D = 1024，输入空间度量）
+重建 R²            R² = 1 - MSE / Var(x)                            （Var = 全体逐维方差）
+重建 cosine        cos = 1/N · Σ_i cosine(x̂_i, x_i)
+逐层累积           只用前 k 层码向量求和 ẑ = Σ_{l<k} e_l[c_{i,l}] 后解码 → MSE(k) / R²(k)
+改码比例           Δ_code = 1/N · Σ_i 1[ 交付码 ≠ 纯 argmin 码 ]    （任一层不同即计 1）
+保真度代价         ΔMSE = MSE(交付码) - MSE(argmin 码)              # A 组与 B 组在全层的差
+```
+
+**C 组 · 检索结构 retrieval structure**（`eval_sid.py: structure_metrics`）
+
+```
+LCP（公共前缀）    lcp(i,j) = Σ_{l=0}^{L-1} Π_{t≤l} 1[c_{i,t} = c_{j,t}]
+                   # 前缀必须逐层全等才继续累加；代码里是 cumprod(eq).sum()
+LCP ratio          LCP_ratio = mean_{(i,j) ∈ NN} lcp(i,j) ÷ mean_{(i,j) ∈ Rand} lcp(i,j)
+                   NN  = 3,000 个 query 各自的余弦最近邻（FAISS IndexFlatIP，排除自身）
+                   Rand= 200,000 个随机对。随机基线恒为 1，越大 = 前缀越承载语义
+LCP gain           LCP_gain = mean_NN lcp − mean_Rand lcp          （绝对增量，辅助读数）
+prefix hit@l       P_nn(l) = P(lcp ≥ l)（近邻对） vs P_rand(l)（随机对）的对比曲线
+prefix cohesion    coh(l) = Σ_g (n_g / N) · [ Σ_{i≠j ∈ g} cos(x_i, x_j) / (n_g (n_g − 1)) ]
+                   # 按前 l 层前缀分组 → 组内两两余弦均值 → 按组大小加权
+cohesion ratio     coh_ratio(l) = coh(l) ÷ mean_{perm} coh_perm(l)
+                   # 分母 = 5 次"标签随机置换"的零假设（即随机分组的同值）
+                   ⚠️ 可信判据：3 ≤ 平均组大小 ≤ N/10 且 pair_coverage > 0.5，否则标"不可信"
+余弦相似度         cos(u, v) = ⟨u, v⟩ / (‖u‖·‖v‖)，向量已 L2 归一化时退化为点积
+```
+
+**D 组 · 融合阶段的代理指标**（`fuse_embeddings.py: recall_at_k / info_nce`）
+
+```
+共现检索 Recall@K  R@K = 1/|Q| · Σ_{q∈Q} 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]，|Q| = 3,000
+                   Top-K(q) = 融合向量空间里与 q 余弦最近的 K 个物品（排除自身）
+                   Gold(q)  = 与 q 共现的留出伙伴（与训练对互斥）
+随机基线           R_rand@K ≈ avg_pos · K / N   （avg_pos = 7.88 → R@10 基线 0.003、R@100 基线 0.030）
+InfoNCE（训练损失） L = −1/B · Σ_a log [ exp(sim(v_a, v⁺_a)/τ) / Σ_{b=1..B} exp(sim(v_a, v⁺_b)/τ) ]
+                   # 双向对称（a→b、b→a 各算一次）；B = 512，τ = 0.07；随机基线 = ln B = 6.24
+```
+
+**E 组 · 端到端指标**（V0 基线 / 后续 SFT·RL 阶段，`utility.py: calculate_hit`）
+
+```
+HR@K     HR@K   = 1/|U| · Σ_u 1[ rank_u ≤ K ]                    # 真实下一个物品是否进 top-K
+NDCG@K   NDCG@K = 1/|U| · Σ_u 1[ rank_u ≤ K ] / log₂(rank_u + 1)
+         # 单正样本 ⇒ IDCG = 1，所以 DCG 就是 1/log₂(rank+1)；未命中记 0
+```
+
+**外部文献指标**（只在 §1.2、§0 引用处出现）沿用原论文口径：
+阿里 FORGE 的 **Gini coefficient**（码本使用均衡度）
+`G = [ 2·Σ_{i=1}^{n} i·p_(i) ] / ( n · Σ_i p_(i) ) − (n+1)/n`，其中 `p_(i)` 是把各码使用频次**升序**排列后的第 i 个；
+`G = 0` 表示完全均衡，`G → 1` 表示使用极度集中（可与 ICR / 死码率互补，本项目暂未接入，见 §5.2）。
+Snap / AdaSID 论文里的 Recall@K 与上式同形，只是 Gold 定义不同（点击/购买正样本）。
+
+**最终 SID 质量（`gate__init8192`，N=25,847）**（指标定义见 §0.1）
 
 | 指标 | 值 | 说明 |
 |---|---|---|
@@ -101,7 +178,8 @@ SID-v2 四项增强：① 多模态 embedding 各自 encoder 后 concat 再投�
 
 系统性研究 SID 构建自由度：默认 **3 层 × 8192** 最优；`1024_4096_32768` 组合能提升 HR@1000；
 RQ-VAE 是最合适的 tokenizer。提出两个**不需要跑 GR 训练**的评估指标：
-`embedding hitrate` + `Gini coefficient`（衡量码本使用均衡度）。线上 +0.35% 交易量，已全量部署。
+`embedding hitrate`（每个 SID 码反查到的 embedding 能否稳定命中同类物品，衡量"码↔语义"的一致性）
++ `Gini coefficient`（衡量码本使用均衡度，公式见 §0.1 末尾）。线上 +0.35% 交易量，已全量部署。
 
 > 对我们的意义：我们 `rq/eval_sid.py` 的三件套目标与之一致；Gini 可直接量化
 > "Sinkhorn 是否把物品摊得太均匀"，值得作为第 4 个指标补进来。
@@ -289,7 +367,8 @@ valid/test 中"无 train 历史"的用户必须丢弃（1,856 / 4,207），否�
 
 ## 2.5 融合：四模式 + 共现 InfoNCE
 
-同一留出集（**80,079 对，avg_pos 7.88，随机基线 R@10 = 0.003**）：
+同一留出集（**80,079 对，avg_pos 7.88，随机基线 R@10 = 0.003**；
+R@K / 随机基线 / InfoNCE 的定义与公式见 **§0.1 D 组**）：
 
 | 模式 | R@10 | R@50 | R@100 | vs text | 参数量 |
 |---|---|---|---|---|---|
@@ -372,7 +451,8 @@ bs 2048 / `kmeans_init=True` / `num_emb_list=[256,256,256]` / `e_dim=32` / seed 
 ```
 
 实测（N=8192）：三层均 256/256 非零码，init 耗时 **7.9~9s**，
-逐层残差能量 ‖·‖ = **1.1354 / 0.8720 / 0.6955**（单调衰减 ⟹ 各层量化预算逐层收敛）。
+**逐层残差能量** `E_l = mean_i ‖ r_{i,l} ‖₂`（第 l 层量化前残差向量的模长均值）
+= **1.1354 / 0.8720 / 0.6955**（单调衰减 ⟹ 各层量化预算逐层收敛，浅层承担主要区分度）。
 
 **⚠️ 踩坑：k-means 不可复现**。原 `layers.py` 的 `KMeans(...)` 没设 `random_state`、且 `shuffle=True`，
 实测同一输入两次聚类质心 max|diff| = **1.605e-01**，而元素量级仅 1.661e-01（**96.6%**）
@@ -453,7 +533,7 @@ Sinkhorn 消解循环每轮把碰撞名单按 64 一桶重新分组——**同�
 另外还有一个早期现象值得知道：**"塌缩谷"** —— ep2~3 碰撞率会崩到 ~1.0（warmup 早期 encoder 大幅漂移、
 码本还没跟上的固有过渡态），与 init 方式无关。这也是 `burn_in_frac` 要跳过前 10% 的原因之一。
 
-## 2.11 SID 质量三件套（`rq/eval_sid.py`）
+## 2.11 SID 质量三件套（`rq/eval_sid.py`，定义与公式见 §0.1 A/B/C 组）
 
 | 维度 | 指标 | 定版读法 |
 |---|---|---|

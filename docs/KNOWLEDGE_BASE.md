@@ -150,6 +150,8 @@ loss = info_nce(ea, eb) + info_nce(eb, ea)       # 双向对称
 
 ### 3.3 实验结果（I&S，同一留出集 80,079 对）
 
+> R@K 的定义、公式与随机基线口径见 **§4.1**；此处只列数字。
+
 | 模式 | R@10 | R@50 | R@100 | vs text |
 |---|---|---|---|---|
 | text | 0.0830 | 0.1783 | 0.2280 | — |
@@ -183,23 +185,86 @@ loss = info_nce(ea, eb) + info_nce(eb, ea)       # 双向对称
 
 ---
 
-## 4. 指标口径：融合阶段的 R@k
+## 4. 指标口径总表（定义 + 公式 + 坑）
 
-**这是一个检索代理指标，不是最终推荐指标。** 定义（`recall_at_k`, `fuse_embeddings.py:285`）：
+> 与 `docs/SID_PIPELINE.md §0.1` 同一口径，公式与 `rq/eval_sid.py`、`fuse_embeddings.py`、
+> `utility.py` 的实现逐行对齐。后文（含 §5 之后各章）引用指标时不再重复推导。
+>
+> 记号：N = 25,847；SID = L=3 层元组 `c_i = (c_{i,0}, c_{i,1}, c_{i,2})`，每层码本 K = 256；
+> 融合向量 `x_i ∈ R^1024`（评估前 L2 归一化），重建向量 `x̂_i`。
+
+### 4.1 融合阶段：共现检索 R@k（**检索代理指标，不是最终推荐指标**）
+
+定义（`recall_at_k`, `fuse_embeddings.py:285`）：
 
 1. 抽 3000 个 query 物品
 2. 融合向量对全库 25,847 件做余弦排序，**排除自身**
 3. 看 top-k 里**是否至少有一个**正样本（= 留出共现伙伴）
 4. 对 3000 个 query 取平均
 
+```
+R@K = 1/|Q| · Σ_{q∈Q} 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]        |Q| = 3,000
+随机基线  R_rand@K ≈ avg_pos · K / N                      avg_pos = 7.88
+```
+
 `gate R@100 = 0.382` 的准确含义：**对 38.2% 的物品，它的某个共现伙伴出现在融合向量空间的 top-100 近邻里**。
-随机基线 = `avg_pos × k ÷ N = 7.88 × 100 ÷ 25847 = 0.030`。
+随机基线 = `avg_pos × k ÷ N = 7.88 × 100 ÷ 25847 = 0.030`（R@10 对应 0.003）。
 
 ⚠️ **不是下游 HR@k**。它衡量"融合向量空间有没有把行为相关的物品聚到一起"——
 而这正是 SID 需要的性质（共现物品该共享前缀）。真正好坏要等 SFT 出 HR@k。
 
 ⚠️ **`recall@k` 绝对值随 `avg_pos` 浮动**，不同留出集的数字不可直接横比
 （早期 avg_pos=3.12 时 text R@10=0.0403；现在 8.15 时口径已变）。**只能在同一留出集内比**。
+
+**InfoNCE（融合训练损失）**，随机基线 = `ln B = 6.24`（B=512 批内负样本）：
+
+```
+L = −1/B · Σ_a log [ exp(sim(v_a, v⁺_a)/τ) / Σ_{b=1..B} exp(sim(v_a, v⁺_b)/τ) ]，双向对称，τ = 0.07
+```
+
+### 4.2 SID 唯一性 uniqueness（`eval_sid.py: uniqueness_metrics`）
+
+```
+ICR（唯一码率）    ICR = |{ c_i : i ∈ I }| / N              碰撞率 = 1 − ICR
+碰撞账本           共享同一 SID 的物品成组 g：组数 G、涉及物品数 Σ|g|、桶均、max |g|
+per-layer 死码率   dead_l = 1 − |{ c_{i,l} : i }| / K
+归一化熵 / ppl     H_l = −Σ_k p_{l,k} log p_{l,k}；H_l^norm = H_l / log K；ppl_l = exp(H_l)
+```
+
+### 4.3 SID 保真度 fidelity（`eval_sid.py: fidelity_metrics`，需 ckpt）
+
+```
+重建 MSE     MSE = 1/(N·D) · Σ_i ‖ x̂_i − x_i ‖²            D = 1024，在**输入空间**度量
+重建 R²      R² = 1 − MSE / Var(x)                          Var = 全体逐维方差
+逐层累积     ẑ = Σ_{l<k} e_l[c_{i,l}] 后解码 → MSE(k) / R²(k)，回答"该用几层"
+改码比例     Δ_code = 1/N · Σ_i 1[ 交付码 ≠ 纯 argmin 码 ]（任一层不同即计入）
+保真度代价   ΔMSE = MSE(交付码) − MSE(argmin 码)            = 碰撞消解付出的代价
+```
+
+### 4.4 SID 检索结构 retrieval structure（`eval_sid.py: structure_metrics`）
+
+```
+LCP            lcp(i,j) = Σ_{l=0}^{L-1} Π_{t≤l} 1[c_{i,t} = c_{j,t}]   # cumprod(eq).sum()
+LCP ratio      mean_{NN} lcp ÷ mean_{随机对} lcp     NN = 3,000 个 query 的余弦最近邻（排除自身）
+                                                     Rand = 200,000 随机对，基线 ≡ 1
+LCP gain       mean_NN lcp − mean_Rand lcp
+cohesion(l)    按前 l 层前缀分组 → 组内两两余弦均值 → 按组大小加权
+cohesion ratio coh(l) ÷ 5 次标签随机置换的均值
+               可信判据：3 ≤ 平均组大小 ≤ N/10 且 pair_coverage > 0.5，否则标"不可信"
+```
+
+### 4.5 端到端（V0 沿用，`utility.py: calculate_hit`）
+
+```
+HR@K     = 1/|U| · Σ_u 1[ rank_u ≤ K ]
+NDCG@K   = 1/|U| · Σ_u 1[ rank_u ≤ K ] / log₂(rank_u + 1)     # 单正样本 ⇒ IDCG = 1
+```
+
+### 4.6 三个跨指标的共同坑
+
+1. **ICR 高 ≠ SID 好**：逐层 Sinkhorn 能把 ICR 做到 1.0，但 LCP 反而变差（前缀层级被抹平）。
+2. **改码比例与保真度要一起看**：唯一性是用 Δ_code 换来的，代价是 ΔMSE / LCP 下降。
+3. **代理指标 ≠ 下游指标**：R@k、LCP、cohesion 都是秒级代理，最终仍要 HR@K / NDCG@K 收口。
 
 ---
 

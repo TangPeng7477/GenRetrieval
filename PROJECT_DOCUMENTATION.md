@@ -60,7 +60,15 @@ item 图像                ──SigLIP──────────→  e_img 
 
 ### 1.3 三条核心增量（面试讲的三个点）
 
-1. **多模态融合 SID** —— 图像引入文本没有的外观/风格信息，用「共现对比学习」训练门控融合层，使融合向量直接优化"推荐友好度"而不是随便对齐两个模态。融合质量用两个**不依赖端到端训练**的代理指标量化（模态互检索 recall@k、共现检索 recall@k）。
+1. **多模态融合 SID** —— 图像引入文本没有的外观/风格信息，用「共现对比学习」训练门控融合层，使融合向量直接优化"推荐友好度"而不是随便对齐两个模态。融合质量用两个**不依赖端到端训练**的代理指标量化：
+
+   - **共现检索 recall@k**（决定 SID 质量的那个）：`R@K = 1/Q · Σ_{q∈Q} 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]`
+     —— 用融合向量在全库做余弦检索、排除自身，看 top-k 里有没有留出的共现伙伴；
+     随机基线 `≈ avg_pos · K / N`。
+   - **模态互检索 recall@k**：文本→图像、图像→文本（两侧维度不同，先岭回归学线性映射再检索），
+     衡量两个模态是否线性可对齐。
+
+   两者的完整口径与坑见 **§4.4**。
 2. **SID token 语义初始化** —— V0 里新增的 SID token embedding 是**随机初始化**（`sft.py:169-170` 只做了 `add_tokens` + `resize_token_embeddings`），模型要花大量步数学"这些符号是什么"。本项目把 codebook 向量投影到 LLM 隐空间来初始化，让 token embedding 一出生就带着商品的语义。
 3. **OPD 替代/增强 GRPO** —— 二值奖励在 SID 生成上是**极度稀疏**的（3 个 token 全对才给 1.0），GRPO 组内归一化后大量 group 优势全 0、无梯度。路线 A 用分层奖励（exact + 语义部分分 + 前缀命中 + 组内 NDCG）缓解；路线 B 用 teacher（Qwen3-1.7B）在线蒸馏提供**稠密**梯度信号，把 KL-to-ref 换成 KL-to-teacher。
 
@@ -277,12 +285,13 @@ ID-based 方法**结构上无法推荐**未见过的 item；SID 从内容量化�
 
 > 教训来源：V0 里 SID 改了只能靠端到端 HR/NDCG 盲判，而端到端实验很贵，导致"改一个地方要等几小时才知道好不好"。
 
-| 指标 | 含义 | 期望 |
+| 指标 | 含义与公式 | 期望 |
 |---|---|---|
-| **模态互检索 recall@k** | 文本→图像、图像→文本 | 衡量两模态语义是否对齐；太低说明图像向量质量差 |
-| **共现检索 recall@k** | 用融合向量检索 Top-k，看命中物品是否与 query 共现（附随机基线） | **真正决定 SID 质量**的代理指标 |
+| **模态互检索 recall@k** | 文本→图像、图像→文本：`R@K = 1/Q · Σ_q 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]`，Gold 是配对样本；两侧维度不同（1024 / 768），先在拟合子集解岭回归线性映射再检索 | 衡量两模态语义是否对齐；太低说明图像向量质量差 |
+| **共现检索 recall@k** | 同式，但 Gold = 留出共现伙伴（与训练对互斥，否则会背答案）；随机基线 `R_rand@K ≈ avg_pos · K / N` | **真正决定 SID 质量**的代理指标 |
 
 两个指标都是**秒级**出结果，可以在跑昂贵的 SFT 之前先筛掉坏方案。
+⚠️ 绝对值随留出集的 `avg_pos` 浮动，**只能在同一留出集内横比**。
 
 ---
 
@@ -310,11 +319,13 @@ ID-based 方法**结构上无法推荐**未见过的 item；SID 从内容量化�
 
 ### 5.3 SID 质量评估三件套（本项目新增）
 
-| 层 | 指标 | 回答什么问题 |
+三个指标的**定义与公式**（与 `rq/eval_sid.py` 实现一致，完整版见 `docs/SID_PIPELINE.md §0.1`）：
+
+| 层 | 指标（公式） | 回答什么问题 |
 |---|---|---|
-| **uniqueness** | ICR（Inverse Collision Rate）、碰撞率、per-layer entropy | SID 是否唯一？码本用得均不均匀？ |
-| **fidelity** | 重构 MSE（`‖e - Σ_l C_l[codes_l]‖²`） | 量化丢了多少信息？ |
-| **retrieval structure** | LCP（Longest Common Prefix）、prefix cohesion vs random | SID 前缀是否真的语义聚类？ |
+| **uniqueness** | **ICR 唯一码率** `ICR = 不同 SID 元组数 / N`，碰撞率 `= 1 − ICR`；**per-layer entropy** `H_l = −Σ_k p_{l,k} log p_{l,k}`（归一化 `H_l / log K`，K = 256），**死码率** `dead_l = 1 − 该层用过的码数 / K` | SID 是否唯一？码本用得均不均匀？ |
+| **fidelity** | **重构 MSE** `MSE = 1/(N·D) · Σ_i ‖ x̂_i − x_i ‖²`，其中 `x̂_i = Dec( Σ_l C_l[c_{i,l}] )`；配套 `R² = 1 − MSE / Var(x)`；逐层累积版（只用前 k 层）回答"该用几层" | 量化丢了多少信息？ |
+| **retrieval structure** | **LCP** `lcp(i,j) = Σ_{l=0}^{L-1} Π_{t≤l} 1[c_{i,t} = c_{j,t}]`；**LCP ratio** = 近邻对均值 ÷ 随机对均值（随机基线 ≡ 1）；**prefix cohesion** = 同前缀组内两两余弦均值 ÷ 随机分组（置换检验）同值 | SID 前缀是否真的语义聚类？ |
 
 **为什么必须有这一层**：SID 是整条链路的地基。地基坏了，后面 SFT/RL 再训也只能在一个错的天花板下优化。三个指标各自便宜、秒级、可解释，且能互相制衡（ICR 高 ≠ SID 好，见上面的 Sinkhorn 案例）。
 
@@ -414,7 +425,11 @@ SID 是 3 个 token 的序列，**必须全部命中才给 1.0**，任何一位�
 
 ### 8.1 端到端指标（沿用 V0）
 
-- **HR@K / NDCG@K**（K = 1, 3, 5, 10），beam search = 10
+- **HR@K**（命中率）：`HR@K = 1/U · Σ_u 1[ rank_u ≤ K ]` —— 真实下一个物品是否落进 top-K。
+- **NDCG@K**（折损累计增益）：`NDCG@K = 1/U · Σ_u 1[ rank_u ≤ K ] / log₂(rank_u + 1)`
+  —— 单正样本（next-item）⇒ IDCG = 1，所以 DCG 就是 `1/log₂(rank+1)`，未命中记 0；
+  它比 HR 多一份"排得越靠前越好"的排序敏感性。
+- K = 1, 3, 5, 10；beam search = 10。实现见 `utility.py: calculate_hit`。
 - 解码用 **Constrained Beam Search**：预计算「前缀 token 序列 → 有效后继 token」的 hash 字典，每步把非法 token 的 logit 置 `-inf`，保证 **100% 生成合法 SID**
 - 单次 `generate()` 同时生成 K 个候选，再 reshape 成每样本 K 个
 
