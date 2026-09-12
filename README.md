@@ -173,14 +173,12 @@ MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
 
 | 文档 | 内容 |
 |---|---|
-| **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)** | **SID 构建全流程：定版配方 + 全部正式实验与结论**（新读者入口） |
-| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 从零跑通（环境 → 数据 → SID → 训练） |
+| **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)** | **SID 唯一入口**：参考方法综述 + 本项目实现与知识点 + 探索过程全记录 + 定版配方（新读者从这进） |
 | [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md) | 知识点与机理总览（RQ-VAE / Sinkhorn / 死码 / 指标口径 + FAQ） |
-| [docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md) | 实验流水账（含失败与作废实验、踩坑速查） |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 从零跑通（环境 → 数据 → SID → 训练） |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |
-| [docs/SID_TRAINING_RECIPES.md](docs/SID_TRAINING_RECIPES.md) | 五家开源实现的真实训练配方 |
-| [docs/MULTIMODAL_SID_SURVEY.md](docs/MULTIMODAL_SID_SURVEY.md) | 工业界多模态 SID 调研 |
+| — | `docs/EXPERIMENT_LOG.md`（实验流水账）为本地文档，按要求未上传 |
 | [docs/V0_MINIONEREC_TECH_DOC.md](docs/V0_MINIONEREC_TECH_DOC.md) | V0 复刻版技术文档（归档） |
 
 ---

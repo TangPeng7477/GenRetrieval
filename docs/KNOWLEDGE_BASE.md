@@ -1,9 +1,10 @@
 # GenRetrieval 知识点总览
 
 > 定位：本项目**所有用到的知识点**的单一入口。每个结论都标注代码出处或实测数字，
-> 不写"应该/可能"。细节散落在 `docs/MULTIMODAL_SID_SURVEY.md`、`docs/SID_TRAINING_RECIPES.md`、
-> `docs/EXPERIMENT_LOG.md`，本文负责串起来。机制解释、踩坑与 FAQ 留在这里；
-> **SID 构建阶段整理好的实验与定版结论见 `docs/SID_PIPELINE.md`**（新读者从那里进）。
+> 不写"应该/可能"。机制解释、踩坑与 FAQ 留在这里，本文负责串起来；
+> **工业界调研与开源配方、SID 探索过程全记录见 `docs/SID_PIPELINE.md`**（新读者从那里进，
+> 原 `MULTIMODAL_SID_SURVEY.md` / `SID_TRAINING_RECIPES.md` 已并入）；
+> 流水账见 `docs/EXPERIMENT_LOG.md`（本地，未上传）。
 >
 > 最后更新：2026-09-13
 
@@ -335,7 +336,7 @@ k-means 用首批 2048 个样本的 **256 个真实质心**做初始化 → 分�
   注意 `forward(use_sk=True)` 与 `get_indices(use_sk=False)` 的**默认值是反的**。
 - 本项目的 `rq/train_rqvae.py` 现用 `use_sk=args.train_use_sk`（默认 False = MiniOneRec 口径）。
 
-详见 `docs/SID_TRAINING_RECIPES.md` §2.3.1。
+详见 `docs/SID_PIPELINE.md` §1.3。
 
 ### 5.6.2 ⚠️ 选 ckpt 必须按碰撞率（+ burn-in），**不能按 loss**
 
@@ -1272,8 +1273,6 @@ MMGRec 融合但塞进 RQ 一起训。我们"先融合成单向量、独立训�
 | `scripts/multimodal/run_sid_exp.sh` | SID 实验编排（模式 × 轮数 → 结果文件夹，透传 `INIT_SAMPLES`） |
 | `scripts/multimodal/compare_sid_modes.py` `compare_rqkmeans.py` | 横向对比表生成（三模式 / RQ-VAE vs RQ-KMeans） |
 | `scripts/multimodal/_archive/` | 已归档的一次性探针（k-means init / init 样本量），结论已并入本文 |
-| `docs/SID_PIPELINE.md` | **SID 构建全流程：定版配方 + 全部正式实验与结论**（新读者入口） |
-| `docs/MULTIMODAL_SID_SURVEY.md` | 工业界多模态 SID 调研（附录 A = 编码器档案） |
-| `docs/SID_TRAINING_RECIPES.md` | 五家开源实现的真实训练配方 |
+| `docs/SID_PIPELINE.md` | **SID 唯一入口**：参考方法综述 + 本项目实现与知识点 + 探索过程全记录 + 定版配方 |
 | `docs/EXPERIMENT_LOG.md` | 实验流水账（含失败实验与踩坑） |
 | `refs/GRID/` | Snap GRID 官方仓库镜像（27MB，已 gitignore）—— Snap SID 论文配套代码 |
