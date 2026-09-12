@@ -1,0 +1,18 @@
+{
+  "model": "Qwen/Qwen3-Embedding-0.6B",
+  "fields": [
+    "title",
+    "features",
+    "category"
+  ],
+  "dim": 1024,
+  "n_items": 25847,
+  "normalized": true,
+  "item_json": "IandS.item.json",
+  "row_order": "sorted(int(idx))",
+  "max_length": 256,
+  "token_budget": 4096,
+  "length_bucketed": true,
+  "text_mean_chars": 710.5307772662204,
+  "elapsed_sec": 12.9
+}

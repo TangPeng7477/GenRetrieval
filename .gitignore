@@ -1,0 +1,83 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Training artifacts and local workspace outputs
+logs/
+outputs/
+checkpoints/
+/models/          # 仅忽略根目录下的模型下载目录（不能用 models/，否则会误伤 rq/models/）
+slides/
+tmp/
+temp/
+results/
+
+# Common experiment files
+*.log
+*.out
+*.err
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# W&B and Hugging Face caches
+wandb/
+.cache/
+
+# ---------------------------------------------------------------------------
+# M1+ 大文件（数据/编码/量化产物）—— 只提交脚本 + 小体积可复现产物
+#   tracked : <short>.stats.json / <short>.item2id / <short>.*.inter
+#   ignored : raw 下载物 / 图像 / .item.json(大) / 向量 .npy / 量化器
+# ---------------------------------------------------------------------------
+data/Amazon23/raw/
+data/Amazon23/*/images/
+data/Amazon23/*/*.item.json
+data/**/*.npy
+data/**/*.faiss
+*.jsonl
+!ts_rec_data/*.json
+
+# Agent 本地工作区（记忆、临时状态）
+.workbuddy/
+
+# 第三方参考仓库（只读参考，用于对标 SID 训练配方；体积大不入 git）
+refs/
+
+# 本机环境临时物（pip 缓存/临时目录、离线 wheel 缓存）
+.tmp/
+.pipecache/
+.wheels/
+
+# SID 实验结果：MiniOneRec 格式的 index json 体积大（~3MB/份）且可由 .npy 重建，不入仓
+# 保留 .npy / .stats.json / eval_*.json / summary.json / train_metrics.json
+results/**/sid_raw.json
+results/**/sid_sk.json
+
+# ---------------------------------------------------------------------------
+# 实验流水账：本地记录用，不进公开仓库
+#   （结论已整理进 docs/SID_PIPELINE.md 与 docs/KNOWLEDGE_BASE.md）
+docs/EXPERIMENT_LOG.md
+
+# 早期对话中生成的旧图（非最终版），已被 docs/figures/ 取代
+photo/
+
+# 小规模探针脚本（结论已并入文档，不随仓库发布）
+scripts/multimodal/_archive/
+

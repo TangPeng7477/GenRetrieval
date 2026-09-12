@@ -1,0 +1,69 @@
+{
+  "categories": [
+    "Video_Games"
+  ],
+  "domains": [
+    "VG"
+  ],
+  "short": "VG",
+  "history_len_cap": 20,
+  "min_rating": 0.0,
+  "n_items": 25611,
+  "n_users": 91540,
+  "n_train": 645055,
+  "n_valid": 14231,
+  "n_test": 11276,
+  "n_cross_domain_users": 0,
+  "valid_users_total": 15655,
+  "test_users_total": 13963,
+  "dropped_valid_users_no_train_history": 1416,
+  "dropped_test_users_no_train_history": 2680,
+  "image_coverage": 1.0,
+  "features_coverage": 0.871,
+  "train_hist_len": {
+    "min": 1,
+    "p50": 4,
+    "mean": 6.22,
+    "max": 20
+  },
+  "test_hist_len": {
+    "min": 1,
+    "p50": 5.0,
+    "mean": 6.89,
+    "max": 20
+  },
+  "max_train_ts": 1628643144,
+  "min_test_ts": 1658003248,
+  "time_leak": false,
+  "by_domain": {
+    "VG": {
+      "category": "Video_Games",
+      "n_items": 25611,
+      "n_train": 645055,
+      "n_valid": 14231,
+      "n_test": 11276,
+      "image_coverage": 1.0
+    }
+  },
+  "train_domain_mix": {
+    "by_target_domain": {
+      "VG": 645055
+    },
+    "samples_with_cross_domain_history": 0,
+    "cross_domain_history_ratio": 0.0
+  },
+  "valid_domain_mix": {
+    "by_target_domain": {
+      "VG": 14231
+    },
+    "samples_with_cross_domain_history": 0,
+    "cross_domain_history_ratio": 0.0
+  },
+  "test_domain_mix": {
+    "by_target_domain": {
+      "VG": 11276
+    },
+    "samples_with_cross_domain_history": 0,
+    "cross_domain_history_ratio": 0.0
+  }
+}

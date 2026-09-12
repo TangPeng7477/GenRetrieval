@@ -1,0 +1,73 @@
+{
+  "n_items": 25847,
+  "n_eval_pairs": 22222,
+  "modality_alignment": {
+    "text_to_image": {
+      "recall@1": 0.211,
+      "recall@5": 0.496,
+      "recall@10": 0.6216666666666667
+    },
+    "image_to_text": {
+      "recall@1": 0.15933333333333333,
+      "recall@5": 0.406,
+      "recall@10": 0.5376666666666666
+    },
+    "n_fit": 12912,
+    "n_test": 3000,
+    "note": "先岭回归学线性映射再检索；跨空间直接点积无定义"
+  },
+  "cooccurrence_retrieval_holdout": {
+    "text": {
+      "recall@10": 0.04033333333333333,
+      "recall@50": 0.088,
+      "recall@100": 0.12166666666666667
+    },
+    "concat": {
+      "recall@10": 0.042333333333333334,
+      "recall@50": 0.093,
+      "recall@100": 0.122
+    },
+    "random_baseline": {
+      "recall@10": 0.001209,
+      "recall@50": 0.006044,
+      "recall@100": 0.012088
+    },
+    "_meta": {
+      "n_query": 3000,
+      "avg_pos": 3.1243
+    }
+  },
+  "cooccurrence_retrieval_trainpairs": {
+    "text": {
+      "recall@10": 0.189,
+      "recall@50": 0.32266666666666666,
+      "recall@100": 0.3963333333333333
+    },
+    "concat": {
+      "recall@10": 0.19033333333333333,
+      "recall@50": 0.32966666666666666,
+      "recall@100": 0.4073333333333333
+    },
+    "random_baseline": {
+      "recall@10": 0.007388,
+      "recall@50": 0.03694,
+      "recall@100": 0.07388
+    },
+    "_meta": {
+      "n_query": 3000,
+      "avg_pos": 19.0957
+    }
+  },
+  "n_train_pairs": 200000,
+  "vectors": {
+    "text": [
+      25847,
+      1024
+    ],
+    "concat": [
+      25847,
+      1024
+    ]
+  },
+  "text_emb_file": "emb_text_title-features-category.npy"
+}

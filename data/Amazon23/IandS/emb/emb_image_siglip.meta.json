@@ -1,0 +1,12 @@
+{
+  "model": "google/siglip-base-patch16-224",
+  "dim": 768,
+  "n_items": 25847,
+  "n_have_image": 25824,
+  "coverage": 0.9991,
+  "num_images_per_item": 1,
+  "normalized": true,
+  "row_order": "sorted(int(idx))  (与 emb_text_* 一致)",
+  "zero_vector_for_missing": true,
+  "elapsed_sec": 856.1
+}

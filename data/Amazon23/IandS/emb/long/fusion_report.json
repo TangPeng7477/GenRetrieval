@@ -1,0 +1,101 @@
+{
+  "n_items": 25847,
+  "n_eval_pairs": 80079,
+  "modality_alignment": {
+    "text_to_image": {
+      "recall@1": 0.211,
+      "recall@5": 0.496,
+      "recall@10": 0.6216666666666667
+    },
+    "image_to_text": {
+      "recall@1": 0.15933333333333333,
+      "recall@5": 0.406,
+      "recall@10": 0.5376666666666666
+    },
+    "n_fit": 12912,
+    "n_test": 3000,
+    "note": "先岭回归学线性映射再检索；跨空间直接点积无定义"
+  },
+  "cooccurrence_retrieval_holdout": {
+    "text": {
+      "recall@10": 0.083,
+      "recall@50": 0.17833333333333334,
+      "recall@100": 0.228
+    },
+    "concat": {
+      "recall@10": 0.08833333333333333,
+      "recall@50": 0.179,
+      "recall@100": 0.23466666666666666
+    },
+    "mlp_e60": {
+      "recall@10": 0.10133333333333333,
+      "recall@50": 0.2693333333333333,
+      "recall@100": 0.36233333333333334
+    },
+    "gate_e60": {
+      "recall@10": 0.11,
+      "recall@50": 0.2786666666666667,
+      "recall@100": 0.382
+    },
+    "random_baseline": {
+      "recall@10": 0.003048,
+      "recall@50": 0.015239,
+      "recall@100": 0.030478
+    },
+    "_meta": {
+      "n_query": 3000,
+      "avg_pos": 7.8777
+    }
+  },
+  "cooccurrence_retrieval_trainpairs": {
+    "text": {
+      "recall@10": 0.403,
+      "recall@50": 0.6116666666666667,
+      "recall@100": 0.701
+    },
+    "concat": {
+      "recall@10": 0.4126666666666667,
+      "recall@50": 0.626,
+      "recall@100": 0.7123333333333334
+    },
+    "mlp_e60": {
+      "recall@10": 0.762,
+      "recall@50": 0.9413333333333334,
+      "recall@100": 0.968
+    },
+    "gate_e60": {
+      "recall@10": 0.795,
+      "recall@50": 0.9633333333333334,
+      "recall@100": 0.9783333333333334
+    },
+    "random_baseline": {
+      "recall@10": 0.025557,
+      "recall@50": 0.127785,
+      "recall@100": 0.255571
+    },
+    "_meta": {
+      "n_query": 3000,
+      "avg_pos": 66.0573
+    }
+  },
+  "n_train_pairs": 720716,
+  "vectors": {
+    "text": [
+      25847,
+      1024
+    ],
+    "concat": [
+      25847,
+      1024
+    ],
+    "mlp_e60": [
+      25847,
+      1024
+    ],
+    "gate_e60": [
+      25847,
+      1024
+    ]
+  },
+  "text_emb_file": "emb_text_title-features-category.npy"
+}

@@ -1,0 +1,31 @@
+{
+  "category": "Industrial_and_Scientific",
+  "history_len_cap": 20,
+  "min_rating": 0.0,
+  "n_items": 25847,
+  "n_users": 46341,
+  "n_train": 251576,
+  "n_valid": 16074,
+  "n_test": 13232,
+  "valid_users_total": 17932,
+  "test_users_total": 17440,
+  "dropped_valid_users_no_train_history": 1856,
+  "dropped_test_users_no_train_history": 4207,
+  "image_coverage": 1.0,
+  "features_coverage": 0.9222,
+  "train_hist_len": {
+    "min": 1,
+    "p50": 3.0,
+    "mean": 4.8,
+    "max": 20
+  },
+  "test_hist_len": {
+    "min": 1,
+    "p50": 5.0,
+    "mean": 6.38,
+    "max": 20
+  },
+  "max_train_ts": 1628643178,
+  "min_test_ts": 1658002837,
+  "time_leak": false
+}

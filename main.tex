@@ -1,0 +1,95 @@
+\documentclass[11pt,a4paper]{article}
+
+% ===== 基础包 =====
+\usepackage{ctex}
+\usepackage{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{fontawesome5}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\definecolor{resumeBlue}{RGB}{0, 82, 147}
+
+% ===== 页面设置 =====
+\geometry{left=1.5cm,right=1.5cm,top=0.5cm,bottom=1.2cm}
+\renewcommand{\baselinestretch}{1.1}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.1em}
+
+% ===== 简历样式命令 =====
+\newcommand{\sectionHead}[1]{%
+    \vspace{0.3em}%
+    \textbf{\large\textcolor{resumeBlue}{#1}}\\[-0.3em]%
+    \textcolor{resumeBlue}{\hrule height 0.5pt}%
+    \vspace{0.3em}%
+}
+
+\newcommand{\datedsubsection}[2]{%
+    \vspace{0.2em}%
+    \noindent\textbf{#1}\hfill #2\par%
+}
+
+\setlist{leftmargin=1.2em, noitemsep, topsep=0pt, parsep=0pt}
+
+\begin{document}
+
+\pagenumbering{gobble}
+
+% ===================== 个人信息 =====================
+\noindent
+\includegraphics[height=1.2cm]{ustc.png}\par
+\vspace{-1.5em}
+
+\begin{center}
+    {\LARGE 唐鹏}\\[0.3em]
+    \faMobile*~18315054067 \quad
+    \faEnvelope~\href{mailto:2550545613@qq.com}{2550545613@qq.com} \quad
+    \faStar~\textbf{可实习一年}
+\end{center}
+
+% ===================== 教育背景 =====================
+\sectionHead{教育背景}
+
+\datedsubsection{中国科学技术大学 — 软件学院 — 软件工程 — 硕士}{2025.09 -- 2028.06}
+\datedsubsection{南京航空航天大学 — 人工智能学院 — 人工智能 — 本科}{2021.09 -- 2025.06}
+
+% ===================== 项目经历 =====================
+\sectionHead{项目经历}
+
+\datedsubsection{MiniOneRec 生成式推荐系统}{2025.12 -- 2026.03}
+\begin{itemize}
+    \item \textbf{项目背景}：基于生成式推荐范式，完成 RQ-VAE SID 构建 $\rightarrow$ SFT 监督微调 $\rightarrow$ GRPO 强化学习的端到端推荐系统，并对比 0.5B 与 1.5B 模型在不同训练阶段的推荐效果。
+    \item \textbf{核心实现}：
+    \begin{itemize}
+        \item \textbf{语义 ID 构建}：设计 RQ-VAE 三层残差量化方案（每层 256 codebook），将商品编码为 3 级离散 token 序列，表示空间达 256³=16M；实现 k-means 初始化 + 承诺损失防止码本坍塌，Sinkhorn 迭代重编码消除 SID 碰撞。
+        \item \textbf{监督微调}：向 LLM 词汇表动态添加 560 个 SID token，设计 3 路多任务联合训练（序列推荐 + SID-标题对齐 + 融合推荐），全参数微调 Qwen2.5-0.5B，1.5B 模型。
+        \item \textbf{GRPO 强化学习对齐}：采用组相对策略优化替代传统 PPO，省去 Value 网络节省约 50\% 显存；设计双奖励机制（二进制正确性奖励 + NDCG 排序奖励），损失函数加入 KL 散度无偏近似约束策略更新幅度；结合 Constrained Beam Search 保证 100\% 生成合法 SID。
+        \item \textbf{Scaling对比实验}：构建完整评估流水线，在 0.5B 和 1.5B 两个规模下分别评测 SFT、RL-epoch1、RL-epoch2 三阶段的 HR/NDCG 指标，验证模型规模与训练阶段对推荐效果的联合影响。
+    \end{itemize}
+    \item \textbf{项目成果}：0.5B 模型 RL 后 HR@10 达 10.9\%（相对 SFT 提升 +17\%），NDCG@10 达 7.4\%（+23\%）；1.5B 模型 HR@10 达 15.4\%，NDCG@10 达 11.6\%，验证了生成式推荐在模型扩展上的有效性。
+\end{itemize}
+\vspace{0.2em}%
+
+\datedsubsection{腾讯广告算法大赛 PCVR 预估模型优化}{2026.03 -- 至今}
+\begin{itemize}
+    \item \textbf{项目背景}：参加 2026 腾讯广告算法大赛学术赛道，面对脱敏广告数据，需在多域行为序列和多类型特征间建立统一的 PCVR 预估模型。
+    \item \textbf{核心实现}：
+    \begin{itemize}
+        \item \textbf{多域序列统一建模框架}：基于 PyTorch 实现 PCVRHyFormer 架构，通过 NSTokenizer 将用户画像、广告属性 token 化，通过 Multi-Sideinfo Tokenizer 建模 4 路行为序列，用 MultiSeqQueryGenerator + HyFormer Block 实现多源特征统一融合。
+        \item \textbf{时间特征工程}：设计曝光时刻离散特征（hour/weekday/daypart）、sin/cos 周期编码、行为新鲜度统计（log-scaled recency、短期行为占比），AUC +1.03\%。
+        \item \textbf{模型结构优化}：引入 sigmoid gating 动态特征选择、user dense 拆分、FAFE query-aware 序列条件增强、user-item/time-item hashed cross 特征，稳定提升 AUC。
+    \end{itemize}
+    \item \textbf{项目成果}：AUC 从 0.8133 提升至 0.8252（+1.19\%），在所有参赛队伍中排名前10\%。
+\end{itemize}
+
+
+% ===================== 专业技能 =====================
+\sectionHead{专业技能}
+\begin{itemize}
+    \item \textbf{推荐算法}：了解召回、排序、重排全链路架构。召回方面熟悉 ItemCF、UserCF 等协同过滤算法，MIMD、SDM 等序列召回方法以及双塔 DSSM 模型；排序阶段掌握 DeepFM、Wide\&Deep、LightGBM 和 XGBoost 等主流模型；重排策略了解 MMR 与 DPP 算法。
+    \item \textbf{大模型与推荐融合}：熟悉大语言模型技术栈，包括 SFT 全量微调、LoRA 与 QLoRA 参数高效微调以及常用RLHF强化学习算法，了解前沿LLM4Rec 与 GenRec 范式。
+    \item \textbf{语言能力}：CET-6（509分），可无障碍阅读 AI/ML 及推荐系统领域论文与技术文档，能够快速跟进国际前沿技术进展。
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,17 @@
+{
+  "items_total": 25611,
+  "items_with_image_url": 25610,
+  "url_coverage": 1.0,
+  "tasks_this_run": 25610,
+  "reused_this_run": 0,
+  "downloaded_ok": 25570,
+  "status_counts": {
+    "ok": 25570,
+    "bad_image": 16,
+    "http_404": 5,
+    "error": 19
+  },
+  "image_files_on_disk": 25570,
+  "effective_coverage": 0.9984,
+  "elapsed_sec": 1532.4
+}
