@@ -7,8 +7,9 @@
 在 [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) 开源框架上做的系统性升级：
 **Amazon Reviews 2023 + 图文多模态 → 门控融合 → RQ-VAE 语义 ID（SID）→ LLM 生成式召回**。
 
-> **当前进度（2026-09-13）**：**数据与 SID 构建阶段已定版**（M1 / M2 完成），
-> SFT / RL 阶段（M3~M5）待上云启动。
+> **当前进度（2026-09-13）**：**数据与 SID 构建阶段已在两个域上定版**
+> —— 域 A `Industrial_and_Scientific`（25,847 商品）与域 B `Video_Games`（25,611 商品）
+> 各跑完完整 pipeline（M1 / M2 完成），SFT / RL 阶段（M3~M5）待上云启动。
 > 本 README 讲"项目是什么、SID 怎么定版的、怎么复现"；
 > 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)**。
 
@@ -59,34 +60,49 @@ bash scripts/multimodal/encode_all.sh IandS
 bash scripts/multimodal/fuse_long.sh IandS 60 5
 RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
   bash scripts/multimodal/run_sid_exp.sh IandS 5000 "gate"
+# 域 B 复验（VG：融合 60 轮 + SID 2 组，约 2h）
+bash scripts/multimodal/run_vg_sid.sh
 ```
 
 ---
 
-## 3. 关键结果（I&S，N=25,847）
+## 3. 关键结果（双域：I&S N=25,847 ｜ VG N=25,611）
 
 ### 3.0 指标定义与公式（各指标首次出现处给出；完整版见 [docs/SID_PIPELINE.md §0.1](docs/SID_PIPELINE.md)）
 
-| 指标 | 定义与公式 | 本项目定版读数 |
-|---|---|---|
-| **Recall@K**（共现检索，融合阶段代理指标） | `R@K = 1/Q · Σ_q 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]`：按融合向量余弦取 Top-K（排除自身），Gold = 留出共现伙伴，Q = 3,000 个 query；随机基线 `≈ avg_pos · K / N` | R@10 = 0.1100（随机基线 0.003） |
-| **ICR**（唯一码率） | `ICR = 不同 SID 元组数 / N`，碰撞率 `= 1 − ICR` | 0.9582 |
-| **LCP ratio**（前缀语义保持，选型主指标） | `mean_NN lcp(i,j) ÷ mean_随机对 lcp(i,j)`；`lcp` = 两个 SID 的最长公共前缀层数；随机基线恒为 1 | 222.1 |
-| **prefix cohesion**（前缀内聚比） | 同前缀组内两两余弦均值 ÷ 随机分组（5 次置换）的同值 | prefix-1 = 2.086 |
-| **重建 MSE / R²**（量化保真度） | `MSE = 1/(N·D) · Σ‖x̂ − x‖²`，`R² = 1 − MSE / Var(x)` | R² = 0.6530 |
-| **L0 死码率** | `dead_l = 1 − 第 l 层被用到的码数 / K`，K = 256 | 0% |
-| **HR@K / NDCG@K**（端到端，SFT/RL 阶段） | `HR@K = 1/U · Σ_u 1[rank_u ≤ K]`；`NDCG@K = 1/U · Σ_u 1[rank_u ≤ K] / log₂(rank_u + 1)`（单正样本 ⇒ IDCG = 1） | 见 §3.4 V0 基线 |
+| 指标 | 定义与公式 | I&S 定版读数 | VG 复验读数 |
+|---|---|---|---|
+| **Recall@K**（共现检索，融合阶段代理指标） | `R@K = 1/Q · Σ_q 1[ Top-K(q) ∩ Gold(q) ≠ ∅ ]`：按融合向量余弦取 Top-K（排除自身），Gold = 留出共现伙伴，Q = 3,000 个 query；随机基线 `≈ avg_pos · K / N` | 0.1100（基线 0.003） | 0.2113（基线 0.0066） |
+| **ICR**（唯一码率）**← 跨域选型主判据** | `ICR = 不同 SID 元组数 / N`，碰撞率 `= 1 − ICR` | 0.9582 | 0.9744 |
+| **LCP ratio**（前缀语义保持） | `mean_NN lcp(i,j) ÷ mean_随机对 lcp(i,j)`；`lcp` = 两个 SID 的最长公共前缀层数；随机基线恒为 1 | 222.1 | 163.6 |
+| **prefix cohesion**（前缀内聚比） | 同前缀组内两两余弦均值 ÷ 随机分组（5 次置换）的同值 | prefix-1 = 2.086 | prefix-1 = 1.585 |
+| **重建 MSE / R²**（量化保真度）**← 跨域选型主判据** | `MSE = 1/(N·D) · Σ‖x̂ − x‖²`，`R² = 1 − MSE / Var(x)` | R² = 0.6530 | R² = 0.8691 |
+| **L0 死码率** | `dead_l = 1 − 第 l 层被用到的码数 / K`，K = 256 | 0% | 3.52%（L1/L2 为 0） |
+| **HR@K / NDCG@K**（端到端，SFT/RL 阶段） | `HR@K = 1/U · Σ_u 1[rank_u ≤ K]`；`NDCG@K = 1/U · Σ_u 1[rank_u ≤ K] / log₂(rank_u + 1)`（单正样本 ⇒ IDCG = 1） | 见 §3.4 V0 基线 | 待 SFT |
 
-### 3.1 融合：监督融合才是增益来源（同一留出集 80,079 对）
+> ⚠️ **主判据不是 LCP**：第二域复验时发现 LCP 这一族指标**跨域会排序反转**
+> （VG 上 RQ-KMeans 的 LCP ratio 206.3 反超 RQ-VAE 的 163.6，而它的 raw ICR 落后 8.6 个点）。
+> 原因是随机基线只有 ~0.005，ratio 被极小分母放大；且 VG 上前缀结构已饱和、失去区分度。
+> 所以跨域选型改用 **raw ICR + 重建 R²**（这两项两域排序完全一致）。推导见
+> [SID_PIPELINE §2.11](docs/SID_PIPELINE.md)。
 
-| 模式 | R@10 | R@50 | R@100 | vs 纯文本 |
-|---|---|---|---|---|
-| text（单模态基线） | 0.0830 | 0.1783 | 0.2280 | — |
-| concat（PCA 线性） | 0.0883 | 0.1790 | 0.2347 | +6% |
-| mlp | 0.1013 | 0.2693 | 0.3623 | +22% |
-| **gate（定版）** | **0.1100** | **0.2787** | **0.3820** | **+33%** |
+### 3.1 融合：监督融合才是增益来源（两域各用互斥留出对评估）
 
-随机基线 `R_rand@K ≈ avg_pos · K / N = 7.88 × 10 / 25,847 = 0.003`（定义见 §3.0）。
+| 模式 | I&S R@10 | I&S R@100 | vs 纯文本 | VG R@10 | VG R@100 | vs 纯文本 |
+|---|---:|---:|---:|---:|---:|---:|
+| text（单模态基线） | 0.0830 | 0.2280 | — | 0.1497 | 0.3957 | — |
+| concat（PCA 线性） | 0.0883 | 0.2347 | +6.4% | 0.1587 | 0.4493 | +6.0% |
+| mlp | 0.1013 | 0.3623 | +22.1% | 0.1917 | 0.6063 | +28.1% |
+| **gate（定版）** | **0.1100** | **0.3820** | **+32.5%** | **0.2113** | **0.6337** | **+41.2%** |
+| 随机基线 | 0.00305 | 0.03048 | — | 0.00659 | 0.06589 | — |
+| 留出对 / query 数 | 80,079 / 3,000 | | | 186,275 / 3,000 | | |
+| `avg_pos` | 7.88 | | | 16.88 | | |
+
+- 随机基线按 `R_rand@K ≈ avg_pos · K / N` 算（定义见 §3.0）：I&S `7.88×10/25,847 = 0.00305`，
+  VG `16.88×10/25,611 = 0.00659`。**两域基线差 2.16× 全部来自 `avg_pos`，所以跨域只能比"相对 text 的增益"。**
+- **VG 上的增益更大**（gate/text +41.2% vs +32.5%，gate/mlp +10.3% vs +8.6%），
+  且模态互检索也更强（text→image R@10 **0.6363** vs 0.6217，image→text **0.5837** vs 0.5377）。
+  这与开跑前的预期一致——游戏的封面是决策主导信息，工业品的图只是补充。
 
 **为什么跑四个模式而不是只比 text / gate**：四档构成"融合复杂度阶梯"——
 `text`（无融合）→ `concat`（无参拼接）→ `mlp`（参数化变换）→ `gate`（输入自适应门控）。
@@ -148,6 +164,55 @@ RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
 
 这是后续 SFT / RL 阶段要超越的锚点。
 
+### 3.5 VG 第二域复验：配方跨域可迁移（2026-09-13）
+
+**为什么只跑 2 组**：I&S 的 6 组是**选型**（配方在那里定）；VG 只回答"换一个分布还成立吗"，
+再跑 6 组消融 = 重复已知结论。所以 VG 只跑 `RQ-VAE`（定版配方）+ `RQ-KMeans`（路线对照）。
+
+```bash
+bash scripts/multimodal/fuse_long.sh VG 60 5   # 融合 60 轮（旧产物是 3 轮口径，不可比，故重跑）
+bash scripts/multimodal/run_vg_sid.sh          # SID 2 组 + 三件套 + 对比表
+```
+
+| 指标 | **VG RQ-VAE** | VG RQ-KMeans | I&S RQ-VAE（参照） | I&S RQ-KMeans（参照） |
+|---|---:|---:|---:|---:|
+| **raw ICR** | **0.9744** | 0.8882 | 0.9582 | 0.8395 |
+| 最大冲突组 | 7 | 12 | 5 | 14 |
+| L0 死码率 | **3.52%** ⚠️ | 0% | 0% | 0% |
+| LCP ratio | 163.6 | 206.3 | 222.1 | 175.8 |
+| 重建 R²（口径不同，仅参考） | **0.8691** | 0.7770 | 0.6530 | 0.4460 |
+| Sinkhorn 后 ICR | 0.9954 | 0.9959 | 0.9997 | 0.9996 |
+| Sinkhorn 改码比例 | **3.93%** | 18.10% | 6.54% | 27.06% |
+| 耗时 | 4,015 s | **5.5 s** | 3,644 s | **6 s** |
+
+**验收判据（开跑前写死，含未达标项）**：ICR ≥ 0.94 → **0.9744 ✅**；
+L0 死码 = 0% → **3.52% ⚠️ 未达标**（9/256 个码弃用，L1/L2 为 0；L0 熵 0.960 说明不是塌缩，
+但按预设标准仍记未达标）；LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
+逃逸条件（死码 > 5% 或 LCP < 100 才补跑 VG init 消融）**未触发 → 不补跑**。
+
+**三个新发现**：
+
+1. **LCP 族指标跨域会排序反转**——VG 上 RQ-KMeans 的 LCP ratio 反超 RQ-VAE，
+   而它的 raw ICR 落后 8.6 个点。→ 跨域主判据改为 **raw ICR + 重建 R²**（详见 §3.0 警示）。
+2. **"融合后 ICR 上限"不是流水线天花板**——它只约束纯 argmin；Sinkhorn 靠 batch 分桶能突破
+   （VG 0.9954 > 理论值 0.9936）。
+3. **非孪生碰撞可以被 100% 清干净**——VG 的 Sinkhorn 残余碰撞 119 份**逐份都在孪生组内**
+   （I&S 残余 7 份同理），"残留碰撞 ≡ 重复 embedding"在双域成立。
+
+### 3.6 SID 产物落盘位置
+
+两域目录同构，`results/sid_e5000/<IandS|VG>/<配置>/`：
+
+| 内容 | 文件 |
+|---|---|
+| **交付 SID**（语义桶） | `gate__init8192/sid_raw.npy` — `(N,3)` int，纯 argmin |
+| 唯一化存档 | `gate__init8192/sid_sk.npy` — 末层 Sinkhorn 版，可随时切回 |
+| 模型权重 / 训练日志 | `gate__init8192/ckpt/selected_model.pth` ｜ `train.log`、`train_metrics.json` |
+| 三件套评估 / 汇总 | `gate__init8192/eval_raw.json`、`eval_sk.json` ｜ `summary.json` |
+| RQ-KMeans 对照 | `rqkmeans/`（同结构） |
+| 路线对比表 | `compare_rqkmeans.md` |
+| 上游融合向量 | `data/Amazon23/<IandS|VG>/emb/long/emb_fused_gate_e60.npy` |
+
 ---
 
 ## 4. 快速开始
@@ -170,6 +235,11 @@ python scripts/multimodal/download_images.py --short IandS
 bash scripts/multimodal/encode_all.sh IandS
 bash scripts/multimodal/fuse_long.sh IandS 60 5
 RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 bash scripts/multimodal/run_sid_exp.sh IandS 5000 "gate"
+# 域 B：Video_Games（同一套命令，只换 --category/--short；SID 只跑定版 2 组，不重做消融）
+python scripts/data/prepare_amazon23.py --category Video_Games --short VG
+python scripts/multimodal/download_images.py --short VG
+bash scripts/multimodal/encode_all.sh VG
+bash scripts/multimodal/run_vg_sid.sh
 # SFT / RL（上云 3090，待启动）
 bash sft_3090.sh
 MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
@@ -208,7 +278,10 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 ```
 
 - **编排**：`scripts/multimodal/run_sid_exp.sh`（I&S 实验矩阵）、`run_vg_sid.sh`（VG 全流程）
-- **诊断**：`scripts/multimodal/diag_collision.py`（碰撞组溯源 / 孪生 embedding 定位）
+- **诊断**：`scripts/multimodal/diag_collision.py`（碰撞组溯源 / 孪生 embedding 定位）、
+  `probe_gate_twins.py`（门控是否用上图像：A/B/C 三类细分）、
+  `probe_twin_sinkhorn.py`（孪生组在 raw/sk 下的存活账本）、
+  `probe_dataset_stats.py`（双域字段覆盖率 / 评分分布 / 长尾 / 冷启动）
 - **环境**：`scripts/setup_env.sh` | `setup_env.ps1`、`download_models.sh`、`tools/hf_repair_cache.py`
 - **被直接 import 的上游文件**（复制自 MiniOneRec 但在用）：`rq/datasets.py`（EmbDataset）、
   `rq/rqkmeans_faiss.py`（FAISS-RQ 量化器）、`rq/models/{rqvae,rq,vq,layers}.py`

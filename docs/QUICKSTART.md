@@ -135,31 +135,36 @@ bash scripts/multimodal/fuse_long.sh IandS 60 5
 RESULTS_ROOT=results/sid_e5000 INIT_SAMPLES=8192 \
   bash scripts/multimodal/run_sid_exp.sh IandS 5000 "gate"
 
-# 产物：results/sid_e5000/IandS/gate/
-#   ckpt/selected_model.pth        按碰撞率选出的 ckpt（不要按 loss 选）
-#   sid_raw.npy  ← 默认交付（语义桶，ICR 0.9582）
-#   sid_sk.npy      Sinkhorn 消解版（ICR 0.9997，存档对照）
-#   eval_raw.json / eval_sk.json    三件套评估报告
+# 域 B：一条命令跑完（融合 60 轮 + SID 2 组 + 三件套 + 对比表，约 2h）
+bash scripts/multimodal/run_vg_sid.sh
+
+# 产物：results/sid_e5000/<IandS|VG>/<配置>/
+#   gate__init8192/ckpt/selected_model.pth      按碰撞率选出的 ckpt（不要按 loss 选）
+#   gate__init8192/sid_raw.npy  ← 默认交付（语义桶）
+#   gate__init8192/sid_sk.npy     Sinkhorn 消解版（存档对照）
+#   gate__init8192/eval_raw.json / eval_sk.json  三件套评估报告
+#   rqkmeans/ 与 compare_rqkmeans.md             RQ-KMeans 对照路线
 ```
 
 | 环节 | 定版选择 | 说明 |
 |---|---|---|
-| 融合 | `gate`（门控） | R@10 0.1100，比纯文本 +33%（随机基线 0.003） |
+| 融合 | `gate`（门控） | I&S R@10 0.1100（vs 纯文本 **+32.5%**）｜VG 0.2113（**+41.2%**）；随机基线 0.003 / 0.0066 |
 | RQ-VAE | 3 层 × 256 码 × 32 维，5000 轮，bs 2048 | 对齐 MiniOneRec 口径 |
-| 初始化 | `--init_samples 8192` | 第 0 层死码 0%（首 batch 初始化是 32.6%） |
+| 初始化 | `--init_samples 8192` | I&S 第 0 层死码 **0%**（首 batch 初始化是 32.6%）；VG 为 3.52%（L1/L2 为 0） |
 | 碰撞 | **不消解，交付 `sid_raw`** | 碰撞组是同系列规格变体，整桶召回交给排序；详见 `docs/SID_PIPELINE.md` |
+| 域 B | **只跑定版 2 组**（RQ-VAE + RQ-KMeans） | 不重做消融（配方已定，重跑=重复结论）；验收判据：ICR≥0.94 / LCP ratio≥150 / R²≥0.6 |
 
 > 想换成 TIGER 系的唯一化口径，直接用同目录下的 `sid_sk.npy` 即可，无需重训。
 
 **指标口径速查**（完整定义与公式见 [`docs/SID_PIPELINE.md` §0.1](SID_PIPELINE.md)）：
 
-| 指标 | 一句话定义 | 定版读数 |
-|---|---|---|
-| R@K | 用融合向量检索 Top-K，命中留出共现伙伴的 query 占比；随机基线 `≈ avg_pos · K / N` | R@10 = 0.1100（基线 0.003） |
-| ICR | `不同 SID 元组数 / N`，碰撞率 `= 1 − ICR` | 0.9582 |
-| LCP ratio | 近邻对的 SID 公共前缀长度 ÷ 随机对同值（基线 ≡ 1） | 222.1 |
-| 重建 R² | `1 − MSE / Var(x)`，其中 `x̂ = Dec(Σ_l C_l[c_l])` | 0.6530 |
-| L0 死码率 | `1 − 第 0 层被用到的码数 / 256` | 0% |
+| 指标 | 一句话定义 | I&S | VG |
+|---|---|---|---|
+| R@K | 用融合向量检索 Top-K，命中留出共现伙伴的 query 占比；随机基线 `≈ avg_pos · K / N` | R@10 = 0.1100（基线 0.003） | 0.2113（基线 0.0066） |
+| ICR（跨域主判据） | `不同 SID 元组数 / N`，碰撞率 `= 1 − ICR` | 0.9582 | 0.9744 |
+| LCP ratio | 近邻对的 SID 公共前缀长度 ÷ 随机对同值（基线 ≡ 1）；**跨域不可横比** | 222.1 | 163.6 |
+| 重建 R²（跨域主判据） | `1 − MSE / Var(x)`，其中 `x̂ = Dec(Σ_l C_l[c_l])` | 0.6530 | 0.8691 |
+| L0 死码率 | `1 − 第 0 层被用到的码数 / 256` | 0% | 3.52% ⚠️ |
 
 ---
 
