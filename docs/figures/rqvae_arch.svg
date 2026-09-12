@@ -1,0 +1,101 @@
+<svg viewBox="0 0 680 516" width="100%" role="img" xmlns="http://www.w3.org/2000/svg"
+  font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+<title>RQ-VAE 网络结构与逐层 K-Means 码本初始化</title>
+<desc>上方为训练前的初始化流程：抽样 8192 条融合向量经随机权重 encoder 得到 32 维 latent，逐层在残差上跑 KMeans(256) 得到三层码本。下方为主链：1024 维融合向量经 encoder 压到 32 维，三层残差量化后由 decoder 重建，损失为重建 MSE 加 codebook 与 0.25 倍 commitment。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect x="40" y="40" width="600" height="106" rx="12" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="56" y="60" font-size="13" font-weight="500" fill="#26215C" dominant-baseline="central">① 训练前：逐层 K-Means 码本初始化（--init_samples 8192，约 8 s）</text>
+
+<rect x="56" y="76" width="100" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="106" y="96" font-size="14" font-weight="500" fill="#412402" text-anchor="middle" dominant-baseline="central">随机抽样</text>
+<text x="106" y="114" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">8192 条 e</text>
+
+<rect x="172" y="76" width="100" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="222" y="96" font-size="14" font-weight="500" fill="#042C53" text-anchor="middle" dominant-baseline="central">Encoder</text>
+<text x="222" y="114" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">随机初始权重</text>
+
+<rect x="288" y="76" width="80" height="52" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="328" y="96" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">KMeans</text>
+<text x="328" y="114" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">k=256 → C0</text>
+
+<rect x="384" y="76" width="80" height="52" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="424" y="96" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">KMeans</text>
+<text x="424" y="114" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">残差 → C1</text>
+
+<rect x="480" y="76" width="80" height="52" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="520" y="96" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">KMeans</text>
+<text x="520" y="114" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">残差 → C2</text>
+
+<path d="M156,102 L168,102" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M272,102 L284,102" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M368,102 L380,102" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M464,102 L476,102" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<text x="56" y="140" font-size="12" fill="#534AB7" dominant-baseline="central">每层都在上一层量化后的残差上聚类 · KMeans(max_iter=100, n_init=10, random_state=0) · 写回 embedding.weight 并置 initted=True</text>
+
+<path d="M328,128 C 328,150 350,160 368,166" fill="none" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<path d="M424,128 C 424,150 412,160 400,166" fill="none" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<path d="M520,128 C 520,150 470,160 432,166" fill="none" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+<rect x="40" y="239" width="90" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="85" y="257" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">融合向量 e</text>
+<text x="85" y="275" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">1024-d</text>
+
+<rect x="150" y="231" width="130" height="72" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="215" y="249" font-size="14" font-weight="500" fill="#042C53" text-anchor="middle" dominant-baseline="central">Encoder MLP</text>
+<text x="215" y="267" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">1024→2048→…→32</text>
+<text x="215" y="285" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">7 层 Linear · 无 BN</text>
+
+<rect x="300" y="170" width="200" height="194" rx="12" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="400" y="188" font-size="13" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">② 残差量化 RQ · 3 层</text>
+
+<rect x="316" y="196" width="168" height="42" rx="8" fill="#FFFFFF" stroke="#534AB7" stroke-width="0.5"/>
+<text x="400" y="210" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">VQ-L0</text>
+<text x="400" y="228" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">C0 (256×32) · argmin</text>
+
+<path d="M400,238 L400,248" fill="none" stroke="#534AB7" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="406" y="243" font-size="11" fill="#534AB7" dominant-baseline="central">r1 = r0 - C0[c0]</text>
+
+<rect x="316" y="252" width="168" height="42" rx="8" fill="#FFFFFF" stroke="#534AB7" stroke-width="0.5"/>
+<text x="400" y="266" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">VQ-L1</text>
+<text x="400" y="284" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">C1 (256×32) · argmin</text>
+
+<path d="M400,294 L400,304" fill="none" stroke="#534AB7" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="406" y="299" font-size="11" fill="#534AB7" dominant-baseline="central">r2 = r1 - C1[c1]</text>
+
+<rect x="316" y="308" width="168" height="42" rx="8" fill="#FFFFFF" stroke="#534AB7" stroke-width="0.5"/>
+<text x="400" y="322" font-size="14" font-weight="500" fill="#26215C" text-anchor="middle" dominant-baseline="central">VQ-L2</text>
+<text x="400" y="340" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">C2 (256×32) · argmin</text>
+
+<rect x="520" y="231" width="120" height="72" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="580" y="249" font-size="14" font-weight="500" fill="#042C53" text-anchor="middle" dominant-baseline="central">Decoder MLP</text>
+<text x="580" y="267" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">32→64→…→1024</text>
+<text x="580" y="285" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">7 层 · 镜像逆序</text>
+
+<path d="M130,267 L146,267" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M280,267 L296,267" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M500,267 L516,267" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M580,303 L580,386" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="520" y="390" width="120" height="44" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="580" y="404" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">x̂ 重建向量</text>
+<text x="580" y="420" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">1024-d</text>
+
+<rect x="180" y="390" width="300" height="48" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="330" y="406" font-size="14" font-weight="500" fill="#412402" text-anchor="middle" dominant-baseline="central">③ 总损失 L</text>
+<text x="330" y="424" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">MSE(x̂, e) + codebook + 0.25 × commitment</text>
+
+<path d="M520,412 L484,412" fill="none" stroke="#854F0B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M400,364 L400,386" fill="none" stroke="#854F0B" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<path d="M85,295 L85,414 L176,414" fill="none" stroke="#854F0B" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<text x="92" y="310" font-size="11" fill="#854F0B" dominant-baseline="central">e（重建真值）</text>
+
+<text x="40" y="460" font-size="12" fill="#5F5E5A" dominant-baseline="central">训练期 sk_epsilons 全为 0，量化一律走 argmin 最近邻；导出期才用 Sinkhorn 消解碰撞（见 §2.9）。</text>
+<text x="40" y="478" font-size="12" fill="#5F5E5A" dominant-baseline="central">梯度用 straight-through 直连：x_q = x + (x_q - x).detach()，量化不可导但梯度能传到 encoder。</text>
+<text x="40" y="496" font-size="12" fill="#5F5E5A" dominant-baseline="central">实测逐层残差能量 ‖r‖ = 1.1354 / 0.8720 / 0.6955，单调衰减说明各层量化预算逐层收敛。</text>
+</svg>
