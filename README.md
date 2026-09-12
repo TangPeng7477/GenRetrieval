@@ -186,11 +186,14 @@ bash scripts/multimodal/run_vg_sid.sh          # SID 2 组 + 三件套 + 对比�
 | 耗时 | 4,015 s | **5.5 s** | 3,644 s | **6 s** |
 
 **验收判据（开跑前写死，含未达标项）**：ICR ≥ 0.94 → **0.9744 ✅**；
-L0 死码 = 0% → **3.52% ⚠️ 未达标**（9/256 个码弃用，L1/L2 为 0；L0 熵 0.960 说明不是塌缩，
-但按预设标准仍记未达标）；LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
+L0 死码 = 0% → **3.52% ⚠️ 未达标**（9/256 个码弃用，L1/L2 为 0）；
+LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
 逃逸条件（死码 > 5% 或 LCP < 100 才补跑 VG init 消融）**未触发 → 不补跑**。
+死码根因已查清（见 §3.5 发现 4 与 [SID_PIPELINE §2.8.2](docs/SID_PIPELINE.md)）：
+**不是塌缩，而是 VG 的融合点云维度太低（有效秩 32 vs I&S 109），256 个 L0 码对本域供给过剩**，
+多余的 9 个质心落在数据云之外、永远拿不到梯度。
 
-**三个新发现**：
+**四个新发现**：
 
 1. **LCP 族指标跨域会排序反转**——VG 上 RQ-KMeans 的 LCP ratio 反超 RQ-VAE，
    而它的 raw ICR 落后 8.6 个点。→ 跨域主判据改为 **raw ICR + 重建 R²**（详见 §3.0 警示）。
@@ -198,6 +201,11 @@ L0 死码 = 0% → **3.52% ⚠️ 未达标**（9/256 个码弃用，L1/L2 为 0
    （VG 0.9954 > 理论值 0.9936）。
 3. **非孪生碰撞可以被 100% 清干净**——VG 的 Sinkhorn 残余碰撞 119 份**逐份都在孪生组内**
    （I&S 残余 7 份同理），"残留碰撞 ≡ 重复 embedding"在双域成立。
+4. **"init8192 → L0 零死码"是 I&S 的域内结论，不能外推**——VG 上 L0 死码 3.52%。
+   实测根因是**输入空间有效秩差一个量级**（VG 32.0 vs I&S 109.2；达 50% 方差所需 PC 数
+   17 vs 111）：VG 的 1024 维里只有约 32 维在动，256 个 L0 元胞铺不满，最孤立的 9 个质心
+   （离样本距离 0.174~0.178，而活码全 ≤ 0.113，**零重叠**）落在数据云外成了永久死码。
+   同一原因也解释了 VG 为什么重建更易（R² 0.869 vs 0.653）——**"好压"与"会塌"是一体两面**。
 
 ### 3.6 SID 产物落盘位置
 
@@ -281,7 +289,8 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 - **诊断**：`scripts/multimodal/diag_collision.py`（碰撞组溯源 / 孪生 embedding 定位）、
   `probe_gate_twins.py`（门控是否用上图像：A/B/C 三类细分）、
   `probe_twin_sinkhorn.py`（孪生组在 raw/sk 下的存活账本）、
-  `probe_dataset_stats.py`（双域字段覆盖率 / 评分分布 / 长尾 / 冷启动）
+  `probe_dataset_stats.py`（双域字段覆盖率 / 评分分布 / 长尾 / 冷启动）、
+  `probe_latent_rank.py`（融合向量与 latent 的有效秩 + L0 码本覆盖 → 死码溯源）
 - **环境**：`scripts/setup_env.sh` | `setup_env.ps1`、`download_models.sh`、`tools/hf_repair_cache.py`
 - **被直接 import 的上游文件**（复制自 MiniOneRec 但在用）：`rq/datasets.py`（EmbDataset）、
   `rq/rqkmeans_faiss.py`（FAISS-RQ 量化器）、`rq/models/{rqvae,rq,vq,layers}.py`
