@@ -1,0 +1,5 @@
+[    0.3s] domain=VG model=content_ann device=cuda commit=762da11 n_items=25611 n_users=94762
+[    0.3s] data.meta = {"n_train_samples": 435534, "n_valid": 94761, "n_test": 94759, "n_train_users_reconstructed": 94761, "n_users_patched_from_valid": 1}
+[    0.3s] === VG / content_ann (B_retrieval) ===
+[    0.3s]   [content_ann] 融合向量 (25611, 1024)，聚合方式 = mean（零训练）
+[   77.5s]   → VG/content_ann TEST: HR@10=0.0237 NDCG@10=0.0124 MRR=0.0120 coverage@10=0.8625  用时 77.2s

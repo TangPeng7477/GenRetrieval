@@ -9,7 +9,8 @@
 
 > **当前进度（2026-09-13）**：**数据与 SID 构建阶段已在两个域上定版**
 > —— 域 A `Industrial_and_Scientific`（25,847 商品）与域 B `Video_Games`（25,611 商品）
-> 各跑完完整 pipeline（M1 / M2 完成），SFT / RL 阶段（M3~M5）待上云启动。
+> 各跑完完整 pipeline（M1 / M2 完成）；**召回阶段基线矩阵已建好并本地实跑**（见 §7 与 [`baseline/`](baseline/)），
+> SFT / RL 阶段（M3~M5）待上云启动。
 > 本 README 讲"项目是什么、SID 怎么定版的、怎么复现"；
 > 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)**。
 
@@ -34,7 +35,8 @@ SID 的质量决定了这件事的上限——同一个 SID 下的物品应当�
 ## 2. 流水线与定版配方
 
 ```
-Amazon23 官方 5core/timestamp 分片（I&S / VG 两域独立，不合并）
+Amazon23 官方 5core 分片（I&S / VG 两域独立，不合并）
+   │  ⚠️ 分片只是**数据源**；评估用的切分协议是 **plain LOO**（见 §7.1），不是官方 timestamp 切片
    │
    ├─ 文本 ──→ Qwen3-Embedding-0.6B ────→ (N, 1024)
    └─ 图像 ──→ SigLIP-base-patch16-224 ─→ (N, 768)
@@ -307,6 +309,20 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 **判据**：`models/` 无权重、`logs/` 无训练日志、`results/` 无对应产物。
 §3.4 的 V0 数字来自原 MiniOneRec 项目（RTX 3090 实测），在本仓仅作待超越的锚点。
 
+### 5.3 召回基线（`baseline/`，独立包，不改动主干）
+
+```
+baseline/run.py                     统一入口（模型注册表 = 实验登记表，定版 4 模型见 §7.2）
+baseline/common/{data,metrics,nn,base}.py   数据加载 / 指标口径 / 训练评估骨架（唯一口径源）
+baseline/models/seq.py                      gru4rec · sasrec（序列建模）
+baseline/models/two_tower.py                twotower_id · twotower_mm（双塔，后者已移出主榜）
+baseline/models/{heuristic,mf}.py           pop·itemknn / bprmf（已移出主榜，实现保留）
+baseline/generative/retrieval.py            content_ann（融合向量近邻）· sid_prefix（已移出主榜）
+baseline/generative/sid_gr.py               sid_gr：SID 自回归 + Trie 约束解码（已移出主榜）
+baseline/scripts/{summarize,diagnose_coldstart,probe_sequence_reconstruction,diag_sidprefix}.py
+baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生成的结果表
+```
+
 ## 6. 文档地图
 
 | 文档 | 内容 |
@@ -316,12 +332,111 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | 从零跑通（环境 → 数据 → SID → 训练） |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |
+| **[docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)** | **召回评估协议定版**：数据集划分依据 + 指标定义 + 冷/热分桶 + 报数模板 + 给 SFT/RL 的三条闸门 |
+| **[baseline/SURVEY.md](baseline/SURVEY.md)** | **召回基线文献综述**：经典/生成式 baseline 清单、公开数字（标核验等级）、能/不能横比的原因 |
+| [baseline/README.md](baseline/README.md) | 召回基线的评估口径、复现设置与命令、踩坑记录 |
+| [baseline/RESULTS.md](baseline/RESULTS.md) | 双域基线实测结果表（自动生成，随跑随更新） |
 | — | `docs/EXPERIMENT_LOG.md`（实验流水账）为本地文档，按要求未上传 |
 | [docs/V0_MINIONEREC_TECH_DOC.md](docs/V0_MINIONEREC_TECH_DOC.md) | V0 复刻版技术文档（归档） |
 
 ---
 
-## 7. 引用
+## 7. 数据集划分与召回基线矩阵（`baseline/`，2026-09-14 定版）
+
+在启动 SFT/RL 之前先立标尺：**没有同口径的基线，"生成式召回提升了多少"这句话无法成立**。
+**划分与指标的口径定版见 [docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)**；
+完整清单、文献数字与口径差异见 **[baseline/SURVEY.md](baseline/SURVEY.md)**；
+复现设置与踩坑见 **[baseline/README.md](baseline/README.md)**；实测结果表见 **[baseline/RESULTS.md](baseline/RESULTS.md)**。
+
+### 7.1 数据集划分（定版 = plain LOO）
+
+> 数据源仍是 Amazon23 **官方 5core 分片**，但**评估切分用的是 plain LOO**（`scripts/data/prepare_amazon23_loo.py`），
+> 与 TIGER / LETTER / LC-Rec / IDGenRec / CCFRec / MTGRec / EAGER 7/8 同类目论文**完全同构**。
+
+| 项 | 定版 | 说明 |
+|---|---|---|
+| 过滤 | 5core（user / item 各 ≥5 次交互） | 官方分片自带 |
+| test | 每用户**最后一条**交互 | plain LOO |
+| valid | 每用户**倒数第二条** | plain LOO |
+| train | 前 K−2 条做 **sliding-window**（target 之前 ≥2 项，history ≤20） | 每用户多条样本 |
+| 候选集 | **全库、无负采样** | 与论文一致 |
+| 屏蔽 | `history ∪ 重建的完整训练序列 ∪ valid 目标` | 不屏蔽会给所有方法放水 |
+
+**样本数（实测，`data/Amazon23/<域>/<域>.stats.json`）**：
+
+| 域 | n_items | n_users | train | valid | test |
+|---|---:|---:|---:|---:|---:|
+| IandS | 25,847 | 50,985 | 208,999 | 50,984 | 50,982 |
+| VG | 25,611 | 94,762 | 435,534 | 94,761 | 94,759 |
+
+- "完整训练序列"不是从文件读的，而是**从滑窗样本反推重建**（三条前提已实测验证，
+  `baseline/scripts/probe_sequence_reconstruction.py`）；不做会给所有方法放水
+  （实测 I&S 补掉 3,722 个、VG 补掉 10,186 个本应屏蔽的物品）。
+- ✅ **与论文逐格对齐**：I&S test 50,985、VG test 94,762 —— 与 CCFRec / MTGRec 报的用户数**完全相同**。
+- ⚠️ 官方自带的序列推荐参考实现用的是 **0core**（候选空间 I&S 是 5core 的 16.5×、VG 的 5.4×），
+  **连"官方参考实现的数字"也不能直接当目标线** —— 三套口径两两不可横比（`SURVEY.md §1.5.2`）。
+- ⚠️ **切 LOO 的代价**：冷启动命题从主榜消失（LOO 下冷目标 ≈0）。v1 timestamp 时代那条
+  "sid_prefix 冷/热比 80%(I&S) / 94%(VG)" 的结论改在 **MiniOneRec-style sliding-window time-split 附录**
+  单独跑（`EVAL_PROTOCOL.md §6` 待办）。
+
+### 7.2 对比基线矩阵（定版 4 个模型）
+
+| 组 | 模型 | 结构 | 输入特征 |
+|---|---|---|---|
+| A_classic | **`gru4rec`** | GRU(1 层) + 末位预测 | ID embedding（纯协同） |
+| A_classic | **`sasrec`** | 因果自注意力(2 层 2 头) + 末位预测 | ID embedding（纯协同） |
+| A_classic | **`twotower_id`** | 双塔：历史 **mean 池化**（★无时序建模） | ID embedding（纯协同） |
+| B_retrieval | **`content_ann`** | 历史融合向量 mean 池化 + 余弦检索 | **多模态融合向量**（冻结） |
+
+> 已移出主榜（实现类与产物均保留可回溯）：`sid_prefix` / `sid_gr`（2026-09-13）、
+> `twotower_mm`（2026-09-14）、`pop` / `itemknn` / `bprmf`（2026-09-13）、`bert4rec`（更早）。
+> 移出理由写在 `baseline/run.py` 的 registry 注释里。
+
+**口径统一**：全库排序（无负采样）、history ≤ 20、**训练目标统一全库 softmax**
+（不用原版的 sampled softmax / BPR，避免"损失函数"与"检索范式"两个变量混在一起）、
+指标用唯一实现 `baseline/common/metrics.py`。
+
+### 7.3 主榜实测（v2 LOO，2026-09-14，8 组）
+
+| 模型 | IandS HR@10 | IandS NDCG@10 | VG HR@10 | VG NDCG@10 | 参数量 |
+|---|---:|---:|---:|---:|---:|
+| **sasrec** | **0.0395** | **0.0225** | **0.0971** | **0.0546** | 1.74M |
+| gru4rec | 0.0361 | 0.0199 | 0.0871 | 0.0484 | 1.66M |
+| twotower_id | 0.0345 | 0.0185 | 0.0740 | 0.0403 | 1.67M |
+| content_ann | 0.0288 | 0.0149 | 0.0237 | 0.0124 | 0（冻结） |
+
+**三条结论**：
+
+1. **时序建模的价值被干净量化**：池化 → GRU → 自注意力，
+   IandS `0.0345 → 0.0361 → 0.0395`（**+14.5%**）、VG `0.0740 → 0.0871 → 0.0971`（**+31.2%**）。
+   VG 交互更密，先后顺序携带的信息更多，收益是 IandS 的两倍多。
+2. **`sasrec` 与论文同梯队**：IandS 0.0395 vs TIGER 自带 sasrec 0.0422（差 −6.4%）；
+   VG 0.0971 已**超过** MTGRec 复现的 TIGER（0.0868），逼近 MTGRec 的 0.0956。
+   → 这是复现实现正确的锚点证据，也是 **SFT/RL 的达标线**（`EVAL_PROTOCOL.md §5` 闸门 1）。
+3. **VG 全面强于 IandS**（sasrec ×2.46、gru4rec ×2.41）：VG 交互密度更高，
+   与 SID 阶段"VG ICR 更高 / 协同更密"的结论一致。
+
+### 7.4 复现命令
+
+```bash
+# 数据（LOO 切分，双域）
+./.venv/Scripts/python.exe scripts/data/prepare_amazon23_loo.py --categories Industrial_and_Scientific --short IandS --sid_dir results/sid_e5000/IandS/gate__init8192
+./.venv/Scripts/python.exe scripts/data/prepare_amazon23_loo.py --categories Video_Games --short VG --sid_dir results/sid_e5000/VG/gate__init8192
+
+# 跑基线（4 模型 × 双域，4GB 卡约 40 min）
+./.venv/Scripts/python.exe -m baseline.run --model all --domain all
+
+# 生成结果表
+./.venv/Scripts/python.exe -m baseline.scripts.summarize --out baseline
+```
+
+> `--sid_dir` 用于保证 `.inter` 的 item 集合与已定版的 `sid_raw` 对齐（LOO 合并三段后会多出
+> 1 个无 SID 的冷启动 item，不过滤会让 SID 类模型越界）。
+> 注意：`--model all` 只包含 7.2 的 4 个模型；已移出的模型需先在 `baseline/run.py` 的 registry 取消注释。
+
+---
+
+## 8. 引用
 
 ```bibtex
 @misc{MiniOneRec,

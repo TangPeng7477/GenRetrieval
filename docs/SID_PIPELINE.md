@@ -66,6 +66,10 @@ IandS 把上表路径里的 `VG` 换成 `IandS` 即可；融合阶段还有 `res
 
 ### 0.1 指标定义与公式（全文统一口径）
 
+> ⚠️ **本节只覆盖"SID 质量"指标**（ICR / 重建 R² / LCP / 死码率）。
+> **"召回效果"指标**（HR@K / NDCG@K / MRR / coverage / gini / beam_ceiling）的定版口径
+> 在 **`docs/EVAL_PROTOCOL.md`**（唯一权威源）—— **两套指标不要串用**。
+>
 > 本项目所有选型都由数字裁决，所以先把指标口径钉死。下面每个公式都与
 > `rq/eval_sid.py`、`scripts/multimodal/fuse_embeddings.py`、`utility.py` 的实现逐行对齐；
 > **后文各章在指标首次出现时只给读法，不再重复公式**。
@@ -151,7 +155,7 @@ Snap / AdaSID 论文里的 Recall@K 与上式同形，只是 Gold 定义不同�
 | 重建 R² | **0.6530** | decoder 重建，量化噪声约 34.7% |
 | 第 0 层死码率 | **0%**（256/256 满用） | 塌缩问题在该配置下不存在 |
 
-**为什么不再做 Sinkhorn 碰撞消解**（2026-09-13 定版，理由三条）
+**为什么不再做 Sinkhorn 碰撞消解**（2026-09-13 定版，理由四条）
 
 1. **碰撞组不是噪声，是语义簇**：实拍最大 3 组全是同品牌同系列规格变体（O 圈 / 自攻螺丝 /
    拉紧带），组内两两 cos 0.92~0.95，随机对基线 0.18 —— 生成式召回整桶返回后交给排序，
@@ -164,6 +168,15 @@ Snap / AdaSID 论文里的 Recall@K 与上式同形，只是 Gold 定义不同�
    唯一性 92.95%→70.58%，Amazon Beauty 的 GR Recall@10 只从 6.1 掉到 6.0 —— **~70% 以上即平台期**；
    原文："Uniqueness should not be evaluated as a gold standard"。其 Table 4 的线上 A/B 更是
    直接用"Top 10 SIDs、每码映射 100 个物品、relevance-guided 消歧"（view +0.57%、share +4.39%）。
+4. **学术侧独立复现同一条结论**（2026-09-13 补充，读源码核实）：Snap 的
+   **GRID**（*Generative Recommendation with Semantic IDs: A Practitioner's Handbook*,
+   CIKM 2025, arXiv:2507.22224；仓库 `snap-research/GRID`）用 **5 seed 逐项消融**对比了两种去重策略——
+   TIGER 式**追加码位** vs **冲突时随机选一个物品**：原文 *"both perform **comparably**,
+   with TIGER's strategy having a **slight edge**. However, TIGER's approach **increases sequence length
+   and decoding complexity**, and its requirement for **global SID distribution knowledge is impractical
+   for large item sets**."* → 与本项目"**不做唯一化、整桶保留**"的取舍同向。
+   ⚠️ 引用时注意：GRID 的评估是 **beam 内排序**（`SIDRetrievalEvaluator` + `top_k_for_generation: 10`），
+   不是全库排序；细节与出处见 `baseline/SURVEY.md §1.5.4`。
 
 > 口径声明：本项目**不做** raw / sk 的 SFT 端到端消融（成本有限）。上述决策依据是
 > 离线结构指标 + 工业界先例，属"有依据的设计选择"，不是端到端验证过的结论。

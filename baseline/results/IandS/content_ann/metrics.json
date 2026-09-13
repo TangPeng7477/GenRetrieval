@@ -1,0 +1,62 @@
+{
+  "domain": "IandS",
+  "model": "content_ann",
+  "group": "B_retrieval",
+  "git_commit": "762da11",
+  "timestamp": "2026-09-13T18:12:44",
+  "device": "cuda",
+  "maxlen": 20,
+  "quick": false,
+  "config": {
+    "agg": "mean"
+  },
+  "model_info": {
+    "model": "content_ann",
+    "trainable": false,
+    "n_params": 0,
+    "cfg": {
+      "agg": "mean"
+    },
+    "agg": "mean",
+    "dim": 1024,
+    "n_rows": 25847
+  },
+  "data": {
+    "n_items": 25847,
+    "n_users": 50985,
+    "n_train_samples": 208999,
+    "n_valid": 50984,
+    "n_test": 50982,
+    "n_train_users_reconstructed": 50985,
+    "n_users_patched_from_valid": 0
+  },
+  "valid": {
+    "HR@1": 0.008198650557037501,
+    "NDCG@1": 0.008198650557037501,
+    "HR@5": 0.02665542130864585,
+    "NDCG@5": 0.017426813480528436,
+    "HR@10": 0.04134630472305037,
+    "NDCG@10": 0.02214568327369989,
+    "MRR": 0.019996557421454716,
+    "n_eval": 50984,
+    "coverage@10": 0.9011877587340891,
+    "gini@10": 0.6128417519753558
+  },
+  "test": {
+    "HR@1": 0.005021380094935467,
+    "NDCG@1": 0.005021380094935467,
+    "HR@5": 0.01784943705621592,
+    "NDCG@5": 0.011425118141861408,
+    "HR@10": 0.02877486171589973,
+    "NDCG@10": 0.014944061619522723,
+    "MRR": 0.013626779267417967,
+    "n_eval": 50982,
+    "coverage@10": 0.8748017178009053,
+    "gini@10": 0.6413464854750511,
+    "hit@10_rank_p50": 4.0,
+    "hit@10_rank_mean": 4.641445126107703,
+    "top1_share_of_hits": 0.17450579413769599
+  },
+  "fit_sec": 0.0,
+  "total_sec": 46.3
+}

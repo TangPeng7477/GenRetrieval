@@ -1,0 +1,5 @@
+[    0.3s] domain=IandS model=content_ann device=cuda commit=762da11 n_items=25847 n_users=50985
+[    0.3s] data.meta = {"n_train_samples": 208999, "n_valid": 50984, "n_test": 50982, "n_train_users_reconstructed": 50985, "n_users_patched_from_valid": 0}
+[    0.3s] === IandS / content_ann (B_retrieval) ===
+[    0.3s]   [content_ann] 融合向量 (25847, 1024)，聚合方式 = mean（零训练）
+[   46.6s]   → IandS/content_ann TEST: HR@10=0.0288 NDCG@10=0.0149 MRR=0.0136 coverage@10=0.8748  用时 46.3s

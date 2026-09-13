@@ -1,0 +1,62 @@
+{
+  "domain": "VG",
+  "model": "content_ann",
+  "group": "B_retrieval",
+  "git_commit": "762da11",
+  "timestamp": "2026-09-13T19:25:37",
+  "device": "cuda",
+  "maxlen": 20,
+  "quick": false,
+  "config": {
+    "agg": "mean"
+  },
+  "model_info": {
+    "model": "content_ann",
+    "trainable": false,
+    "n_params": 0,
+    "cfg": {
+      "agg": "mean"
+    },
+    "agg": "mean",
+    "dim": 1024,
+    "n_rows": 25611
+  },
+  "data": {
+    "n_items": 25611,
+    "n_users": 94762,
+    "n_train_samples": 435534,
+    "n_valid": 94761,
+    "n_test": 94759,
+    "n_train_users_reconstructed": 94761,
+    "n_users_patched_from_valid": 1
+  },
+  "valid": {
+    "HR@1": 0.005086480725192854,
+    "NDCG@1": 0.005086480725192854,
+    "HR@5": 0.019797173942866793,
+    "NDCG@5": 0.012474476112962384,
+    "HR@10": 0.03176412237101761,
+    "NDCG@10": 0.016307839266546494,
+    "MRR": 0.015366605831062119,
+    "n_eval": 94761,
+    "coverage@10": 0.8982078013353637,
+    "gini@10": 0.6627183500026114
+  },
+  "test": {
+    "HR@1": 0.004231788009582203,
+    "NDCG@1": 0.004231788009582203,
+    "HR@5": 0.014763769140662101,
+    "NDCG@5": 0.009480237285696592,
+    "HR@10": 0.023712787175888306,
+    "NDCG@10": 0.012355713110101392,
+    "MRR": 0.011983026911227462,
+    "n_eval": 94759,
+    "coverage@10": 0.8625200109328023,
+    "gini@10": 0.6908104267999575,
+    "hit@10_rank_p50": 4.0,
+    "hit@10_rank_mean": 4.643969737427681,
+    "top1_share_of_hits": 0.17846016911437473
+  },
+  "fit_sec": 0.1,
+  "total_sec": 77.2
+}

@@ -1,0 +1,105 @@
+[    0.3s] domain=IandS model=twotower_id device=cuda commit=762da11 n_items=25847 n_users=50985
+[    0.3s] data.meta = {"n_train_samples": 208999, "n_valid": 50984, "n_test": 50982, "n_train_users_reconstructed": 50985, "n_users_patched_from_valid": 0}
+[    0.3s] === IandS / twotower_id (A_classic) ===
+[    0.6s]   [twotower_id] 参数量 1671.4K  训练样本 208999  batch=512 maxlen=20 device=cuda
+[    3.4s]     ep1 step50/409 loss=12.1302
+[    4.2s]     ep1 step100/409 loss=10.9697
+[    5.3s]     ep1 step150/409 loss=10.5593
+[    6.1s]     ep1 step200/409 loss=10.3421
+[    6.9s]     ep1 step250/409 loss=10.1962
+[    7.6s]     ep1 step300/409 loss=10.0822
+[    8.4s]     ep1 step350/409 loss=9.9886
+[    9.2s]     ep1 step400/409 loss=9.9089
+[   33.1s]   epoch 1: train_loss=9.8962 valid NDCG@10=0.0129 HR@10=0.0241 (31s)
+[   34.0s]     ep2 step50/409 loss=9.1717
+[   34.8s]     ep2 step100/409 loss=9.1579
+[   35.6s]     ep2 step150/409 loss=9.1370
+[   36.4s]     ep2 step200/409 loss=9.1131
+[   37.2s]     ep2 step250/409 loss=9.0853
+[   38.0s]     ep2 step300/409 loss=9.0555
+[   38.8s]     ep2 step350/409 loss=9.0318
+[   39.6s]     ep2 step400/409 loss=9.0079
+[   63.2s]   epoch 2: train_loss=9.0048 valid NDCG@10=0.0164 HR@10=0.0309 (30s)
+[   64.2s]     ep3 step50/409 loss=8.5789
+[   65.0s]     ep3 step100/409 loss=8.5991
+[   65.8s]     ep3 step150/409 loss=8.6127
+[   66.6s]     ep3 step200/409 loss=8.6138
+[   67.4s]     ep3 step250/409 loss=8.6163
+[   68.2s]     ep3 step300/409 loss=8.6173
+[   69.0s]     ep3 step350/409 loss=8.6202
+[   69.8s]     ep3 step400/409 loss=8.6200
+[   93.6s]   epoch 3: train_loss=8.6193 valid NDCG@10=0.0188 HR@10=0.0353 (30s)
+[   94.6s]     ep4 step50/409 loss=8.2247
+[   95.7s]     ep4 step100/409 loss=8.2533
+[   96.4s]     ep4 step150/409 loss=8.2842
+[   97.2s]     ep4 step200/409 loss=8.3060
+[   98.0s]     ep4 step250/409 loss=8.3230
+[   98.8s]     ep4 step300/409 loss=8.3334
+[   99.6s]     ep4 step350/409 loss=8.3413
+[  100.4s]     ep4 step400/409 loss=8.3491
+[  124.5s]   epoch 4: train_loss=8.3507 valid NDCG@10=0.0201 HR@10=0.0374 (31s)
+[  125.6s]     ep5 step50/409 loss=7.8771
+[  126.4s]     ep5 step100/409 loss=7.9182
+[  127.2s]     ep5 step150/409 loss=7.9639
+[  128.0s]     ep5 step200/409 loss=7.9949
+[  128.8s]     ep5 step250/409 loss=8.0221
+[  129.8s]     ep5 step300/409 loss=8.0450
+[  130.6s]     ep5 step350/409 loss=8.0667
+[  131.4s]     ep5 step400/409 loss=8.0807
+[  155.2s]   epoch 5: train_loss=8.0839 valid NDCG@10=0.0220 HR@10=0.0410 (31s)
+[  156.2s]     ep6 step50/409 loss=7.5582
+[  157.0s]     ep6 step100/409 loss=7.6064
+[  157.8s]     ep6 step150/409 loss=7.6578
+[  158.6s]     ep6 step200/409 loss=7.7025
+[  159.4s]     ep6 step250/409 loss=7.7415
+[  160.2s]     ep6 step300/409 loss=7.7701
+[  161.0s]     ep6 step350/409 loss=7.7971
+[  161.8s]     ep6 step400/409 loss=7.8212
+[  185.9s]   epoch 6: train_loss=7.8246 valid NDCG@10=0.0222 HR@10=0.0407 (31s)
+[  186.8s]     ep7 step50/409 loss=7.2646
+[  187.6s]     ep7 step100/409 loss=7.3303
+[  188.4s]     ep7 step150/409 loss=7.3978
+[  189.2s]     ep7 step200/409 loss=7.4427
+[  190.0s]     ep7 step250/409 loss=7.4805
+[  190.8s]     ep7 step300/409 loss=7.5156
+[  191.6s]     ep7 step350/409 loss=7.5490
+[  192.4s]     ep7 step400/409 loss=7.5766
+[  216.1s]   epoch 7: train_loss=7.5801 valid NDCG@10=0.0226 HR@10=0.0418 (30s)
+[  217.0s]     ep8 step50/409 loss=7.0105
+[  217.8s]     ep8 step100/409 loss=7.0829
+[  218.6s]     ep8 step150/409 loss=7.1492
+[  219.7s]     ep8 step200/409 loss=7.2026
+[  220.5s]     ep8 step250/409 loss=7.2458
+[  221.3s]     ep8 step300/409 loss=7.2844
+[  222.1s]     ep8 step350/409 loss=7.3196
+[  222.9s]     ep8 step400/409 loss=7.3534
+[  246.4s]   epoch 8: train_loss=7.3589 valid NDCG@10=0.0207 HR@10=0.0378 (30s)
+[  247.6s]     ep9 step50/409 loss=6.8010
+[  248.4s]     ep9 step100/409 loss=6.8610
+[  249.2s]     ep9 step150/409 loss=6.9265
+[  250.0s]     ep9 step200/409 loss=6.9778
+[  250.9s]     ep9 step250/409 loss=7.0340
+[  251.7s]     ep9 step300/409 loss=7.0744
+[  252.5s]     ep9 step350/409 loss=7.1143
+[  253.3s]     ep9 step400/409 loss=7.1509
+[  277.0s]   epoch 9: train_loss=7.1561 valid NDCG@10=0.0210 HR@10=0.0388 (31s)
+[  278.2s]     ep10 step50/409 loss=6.5926
+[  279.0s]     ep10 step100/409 loss=6.6574
+[  279.8s]     ep10 step150/409 loss=6.7298
+[  280.6s]     ep10 step200/409 loss=6.7930
+[  281.4s]     ep10 step250/409 loss=6.8437
+[  282.2s]     ep10 step300/409 loss=6.8906
+[  283.0s]     ep10 step350/409 loss=6.9304
+[  283.9s]     ep10 step400/409 loss=6.9667
+[  307.1s]   epoch 10: train_loss=6.9724 valid NDCG@10=0.0207 HR@10=0.0378 (30s)
+[  308.2s]     ep11 step50/409 loss=6.3829
+[  309.0s]     ep11 step100/409 loss=6.4599
+[  309.8s]     ep11 step150/409 loss=6.5469
+[  310.6s]     ep11 step200/409 loss=6.6153
+[  311.4s]     ep11 step250/409 loss=6.6746
+[  312.2s]     ep11 step300/409 loss=6.7202
+[  313.1s]     ep11 step350/409 loss=6.7611
+[  313.9s]     ep11 step400/409 loss=6.7976
+[  337.2s]   epoch 11: train_loss=6.8035 valid NDCG@10=0.0202 HR@10=0.0367 (30s)
+[  337.2s]   早停：4 轮未提升（best epoch 7, NDCG@10=0.0226）
+[  386.7s]   → IandS/twotower_id TEST: HR@10=0.0345 NDCG@10=0.0185 MRR=0.0174 coverage@10=0.3829  用时 386.5s

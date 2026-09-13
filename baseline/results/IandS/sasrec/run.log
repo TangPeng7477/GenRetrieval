@@ -1,0 +1,87 @@
+[    0.3s] domain=IandS model=sasrec device=cuda commit=762da11 n_items=25847 n_users=50985
+[    0.3s] data.meta = {"n_train_samples": 208999, "n_valid": 50984, "n_test": 50982, "n_train_users_reconstructed": 50985, "n_users_patched_from_valid": 0}
+[    0.3s] === IandS / sasrec (A_classic) ===
+[    0.5s]   [sasrec] 参数量 1755.8K  训练样本 208999  batch=512 maxlen=20 device=cuda
+[    1.8s]     ep1 step50/409 loss=10.0360
+[    2.8s]     ep1 step100/409 loss=9.9324
+[    3.8s]     ep1 step150/409 loss=9.8758
+[    4.8s]     ep1 step200/409 loss=9.8362
+[    5.8s]     ep1 step250/409 loss=9.7929
+[    6.8s]     ep1 step300/409 loss=9.7489
+[    7.8s]     ep1 step350/409 loss=9.7064
+[    8.8s]     ep1 step400/409 loss=9.6632
+[   27.6s]   epoch 1: train_loss=9.6567 valid NDCG@10=0.0141 HR@10=0.0263 (27s)
+[   28.8s]     ep2 step50/409 loss=9.0842
+[   29.8s]     ep2 step100/409 loss=9.0654
+[   30.8s]     ep2 step150/409 loss=9.0441
+[   31.8s]     ep2 step200/409 loss=9.0213
+[   32.8s]     ep2 step250/409 loss=8.9990
+[   33.8s]     ep2 step300/409 loss=8.9771
+[   34.8s]     ep2 step350/409 loss=8.9576
+[   35.8s]     ep2 step400/409 loss=8.9377
+[   54.8s]   epoch 2: train_loss=8.9343 valid NDCG@10=0.0195 HR@10=0.0363 (27s)
+[   56.1s]     ep3 step50/409 loss=8.4004
+[   57.1s]     ep3 step100/409 loss=8.3983
+[   58.1s]     ep3 step150/409 loss=8.3891
+[   59.1s]     ep3 step200/409 loss=8.3816
+[   60.1s]     ep3 step250/409 loss=8.3802
+[   61.1s]     ep3 step300/409 loss=8.3718
+[   62.3s]     ep3 step350/409 loss=8.3680
+[   63.3s]     ep3 step400/409 loss=8.3633
+[   82.4s]   epoch 3: train_loss=8.3626 valid NDCG@10=0.0266 HR@10=0.0468 (28s)
+[   83.6s]     ep4 step50/409 loss=7.7093
+[   84.6s]     ep4 step100/409 loss=7.7362
+[   85.6s]     ep4 step150/409 loss=7.7456
+[   86.6s]     ep4 step200/409 loss=7.7609
+[   87.6s]     ep4 step250/409 loss=7.7763
+[   88.6s]     ep4 step300/409 loss=7.7935
+[   89.6s]     ep4 step350/409 loss=7.8045
+[   90.6s]     ep4 step400/409 loss=7.8152
+[  109.2s]   epoch 4: train_loss=7.8176 valid NDCG@10=0.0297 HR@10=0.0517 (27s)
+[  110.2s]     ep5 step50/409 loss=7.1597
+[  111.2s]     ep5 step100/409 loss=7.2020
+[  112.4s]     ep5 step150/409 loss=7.2405
+[  113.4s]     ep5 step200/409 loss=7.2786
+[  114.4s]     ep5 step250/409 loss=7.3065
+[  115.4s]     ep5 step300/409 loss=7.3333
+[  116.4s]     ep5 step350/409 loss=7.3576
+[  117.4s]     ep5 step400/409 loss=7.3829
+[  136.1s]   epoch 5: train_loss=7.3868 valid NDCG@10=0.0300 HR@10=0.0506 (27s)
+[  137.1s]     ep6 step50/409 loss=6.8075
+[  138.1s]     ep6 step100/409 loss=6.8577
+[  139.1s]     ep6 step150/409 loss=6.9123
+[  140.1s]     ep6 step200/409 loss=6.9555
+[  141.1s]     ep6 step250/409 loss=6.9927
+[  142.1s]     ep6 step300/409 loss=7.0294
+[  143.1s]     ep6 step350/409 loss=7.0606
+[  144.1s]     ep6 step400/409 loss=7.0914
+[  162.6s]   epoch 6: train_loss=7.0965 valid NDCG@10=0.0294 HR@10=0.0504 (27s)
+[  163.9s]     ep7 step50/409 loss=6.5563
+[  164.9s]     ep7 step100/409 loss=6.6202
+[  165.9s]     ep7 step150/409 loss=6.6751
+[  166.9s]     ep7 step200/409 loss=6.7293
+[  167.9s]     ep7 step250/409 loss=6.7768
+[  168.9s]     ep7 step300/409 loss=6.8179
+[  169.9s]     ep7 step350/409 loss=6.8574
+[  170.9s]     ep7 step400/409 loss=6.8926
+[  189.7s]   epoch 7: train_loss=6.8974 valid NDCG@10=0.0293 HR@10=0.0501 (27s)
+[  190.9s]     ep8 step50/409 loss=6.4125
+[  192.2s]     ep8 step100/409 loss=6.4663
+[  193.1s]     ep8 step150/409 loss=6.5236
+[  194.1s]     ep8 step200/409 loss=6.5811
+[  195.1s]     ep8 step250/409 loss=6.6302
+[  196.1s]     ep8 step300/409 loss=6.6719
+[  197.1s]     ep8 step350/409 loss=6.7080
+[  198.1s]     ep8 step400/409 loss=6.7459
+[  216.7s]   epoch 8: train_loss=6.7510 valid NDCG@10=0.0298 HR@10=0.0510 (27s)
+[  217.9s]     ep9 step50/409 loss=6.3018
+[  218.9s]     ep9 step100/409 loss=6.3642
+[  219.9s]     ep9 step150/409 loss=6.4178
+[  220.9s]     ep9 step200/409 loss=6.4657
+[  221.9s]     ep9 step250/409 loss=6.5129
+[  222.9s]     ep9 step300/409 loss=6.5526
+[  224.1s]     ep9 step350/409 loss=6.5913
+[  225.1s]     ep9 step400/409 loss=6.6283
+[  243.8s]   epoch 9: train_loss=6.6337 valid NDCG@10=0.0290 HR@10=0.0494 (27s)
+[  243.8s]   早停：4 轮未提升（best epoch 5, NDCG@10=0.0300）
+[  289.6s]   → IandS/sasrec TEST: HR@10=0.0395 NDCG@10=0.0225 MRR=0.0211 coverage@10=0.6041  用时 289.3s
