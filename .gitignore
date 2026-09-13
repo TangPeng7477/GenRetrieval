@@ -81,3 +81,12 @@ photo/
 # 小规模探针脚本（结论已并入文档，不随仓库发布）
 scripts/multimodal/_archive/
 
+
+# --- baseline 目录（2026-09-13 新增）---
+# results/ 这条规则会连带忽略 baseline/results/；但 baseline 的 metrics.json 只有几 KB，
+# 是"数字能指回机器可读产物"的证据，必须进 git，所以显式反忽略。
+!baseline/results/
+!baseline/results/**
+baseline/_trash_quick/
+baseline/_dropped/
+baseline/tmp/
