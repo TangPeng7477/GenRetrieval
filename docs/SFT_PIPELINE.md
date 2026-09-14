@@ -18,7 +18,7 @@
 | 主任务 T1 | 历史 SID 序列 → 目标 SID，**提示词与 MiniOneRec 逐字一致** | `[代码]` `data.py::SidSFTDataset` |
 | 辅助任务 | T2 `sid↔title` ／ T3 `seq2title` ／ T4 `text2sid`（本项目新增） | §2 |
 | 样本数 | I&S 209k/51k/51k ／ VG 436k/95k/95k（train/valid/test） | `[实测]` |
-| `cutoff_len` | **320**（T1/T2/T3 最长 179；含 T4 最长 309）→ 比 V0 的 512 省 ~40% | `[实测]` §4 ③ |
+| `cutoff_len` | **400**（只训 T1/T2/T3 时 320 就够；**带 T4 必须 400**，全量 max 392） | `[实测]` §3.1 表 |
 | 训练端 | **MiniOneRec `sft.py` + `data.py` 原样可用**，已实跑验证 | `[实测]` §4 ⑤ |
 | 碰撞（语义桶） | 主榜**严格口径**（每 SID 桶取 1 个 representative），另报宽松上界 | §5.1 |
 
@@ -36,13 +36,18 @@
 
 **本项目走 B**（与 MiniOneRec 同构），三条理由：
 
-1. **可比性**：V0 锚点（README §3.4 的 0.5B SFT HR@10 = 0.093）就是 B 形态跑出来的。
-   换成 A 会连"prompt 段算不算 loss"这个变量一起改，**M3 第一次跑就失去锚点**。
-2. **样本效率**：B 只对 target 段计 loss，历史段是纯条件；A 对历史段也算 loss，
+1. **样本效率**：B 只对 target 段计 loss，历史段是纯条件；A 对历史段也算 loss，
    在 0.6B 小模型 + 20 万样本上，A 会把容量浪费在"复述历史"上。
+2. **辅助任务能挂上去**：只有 B 形态能自然地把 T2/T4 这类"SID ↔ 文本"对齐任务
+   塞进同一个 batch（同一套 instruction 外壳）。LC-Rec 的 alignment 主张（§1.1）就靠这个落地。
 3. **与 C 的取舍**：C（IDGenRec 的文本化 ID）对**冷启动/零样本**更友好（新商品有文本就能出 ID），
    但本项目 SID 已定版为 RQ-VAE 离散码（`SID_PIPELINE.md`），换路线等于推倒重来。
    **C 的思想用 T4 任务部分吸收**（让模型学会"从富文本反查 SID"，见 §2）。
+
+> ⚠️ **曾经写在第 1 条的理由已作废**（2026-09-14 自我纠正）：
+> "走 B 是为了保住 V0 锚点（HR@10 = 0.093）的可比性" —— **这个理由不成立**。
+> V0 是 Amazon18 + 全局时间 8:1:1 + Qwen2.5-0.5B，本项目是 Amazon23 + LOO + Qwen3-0.6B，
+> 数据集都不同，本来就比不了（详见 §5.3）。删掉这条后，B 仍是首选，但理由是上面的 1/2/3。
 
 ### 1.1 LC-Rec 的 alignment tuning（本项目的辅助任务直接来源）
 
@@ -96,13 +101,24 @@ Below is an instruction that describes a task, paired with an input that provide
 | 任务 | instruction | input（示例） | output | 落盘 |
 |---|---|---|---|---|
 | **T1 `seq2sid`** | `Can you predict the next possible item that the user may expect?` | `The user has interacted with items <a_147><b_81><c_146>, <a_148><b_184><c_140> in chronological order. Can you predict the next possible item that the user may expect?` | `<a_5><b_23><c_66>` | `{train,valid,test}/*.csv` |
-| **T2a `sid2title`** | `Answer the question about item identification.` | `What is the title of item "<a_5><b_23><c_66>"?` | 商品标题 | `tasks/itemfeat.jsonl` |
+| **T2a `sid2title`** | `Answer the question about item identification.` | `What is the title of item <a_5><b_23><c_66>?` | 商品标题 | `tasks/itemfeat.jsonl` |
 | **T2b `title2sid`** | 同上 | `Which item has the title: 3Doodler "What Will You Create? Project Book?` | `<a_5><b_23><c_66>` | 同上 |
 | **T3 `seq2title`** | `Can you recommend the next item for the user based on their interaction history?` | `The user has sequentially interacted with items <a_147>…, <a_148>…. Can you recommend the next item for him? Tell me the title of the item` | 商品标题 | `tasks/seq2title_*.jsonl` |
-| **T4 `text2sid`** | `Answer the question about item identification.` | `An item can be described as follows: "3Doodler … \| Brand: WobbleWorks \| Categories: … \| Features: …". Which item is it describing?` | `<a_5><b_23><c_66>` | `tasks/text2sid.jsonl` |
+| **T4 `text2sid`** | `Answer the question about item identification.` | `An item can be described as follows: 3Doodler … \| Brand: WobbleWorks \| Categories: … \| Features: …. Which item is it describing?` | `<a_5><b_23><c_66>` | `tasks/text2sid.jsonl` |
 
 **历史段的分隔**：物品内三层 token **直接拼接**（`<a_5><b_23><c_66>`），物品之间用 `", "` 分隔
 ——与 MiniOneRec `data.py::get_history` 一致，这样"一个物品 = 连续 3 个 token"，Trie 约束解码的层级才对得上。
+
+### 2.1 引号口径（2026-09-14 定版）：**全部裸写，一律不加引号**
+
+MiniOneRec 原文是 T2a 的 SID 带双引号、T2b 的 title 不带（不对称）。本项目统一为
+**SID / title / text 全部裸写**，理由：
+
+1. `<a_5><b_23><c_66>` 的尖括号本身就是天然定界符，不需要引号；
+2. **completion 里的 SID 必须裸写** —— 否则 Trie 约束解码的首个 token 会变成 `"` 而不是 `<a_*>`，
+   要连 `LogitProcessor.py` 的起点一起改；
+3. T4 的 text 内部本身含未闭合双引号（如 `3Doodler "What Will You Create? Project Book`），
+   外部再包一层引号会让边界更乱。
 
 ---
 
@@ -135,6 +151,60 @@ data/Amazon23/<域>/sft/
 ./.venv/Scripts/python.exe scripts/data/verify_sft_data.py  --domain all   # 体检，见 §4
 ```
 
+### 3.1 明文 prompt 渲染产物（`scripts/data/build_sft_prompts.py`）
+
+§3 的产物是"结构化中间态"（CSV / jsonl），训练端还要自己拼提示词。
+`build_sft_prompts.py` 把它们**渲染成明文 prompt**，双格式各一套，供训练端直接读：
+
+```
+data/Amazon23/<域>/sft/prompts/
+├── alpaca/  T1_seq2sid.{train,valid,test}.jsonl · T2_itemfeat.jsonl
+│            T3_seq2title.{train,valid,test}.jsonl · T4_text2sid.jsonl · stats.json
+├── chatml/  同上
+└── stats.json
+data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
+```
+
+每行 7 字段：`{task, split, prompt, completion, n_prompt_tok, n_compl_tok, meta}`
+（`meta` 带 `user_id` / `item_id` / `n_hist`，方便后面做冷/热分桶）
+
+| 口径 | 决定 |
+|---|---|
+| **主榜 Run-0 用 `chatml`** | Qwen3 原生格式，与预训练一致；`<\|im_start\|>assistant` 配 `<\|im_end\|>` 自洽 |
+| `alpaca` 也产 | 作为"格式有没有影响"的单变量消融（**不是**为比 V0 —— 见 §5.3） |
+| `completion` **不含 EOS** | 由训练端 `encode(eos=True)` 追加；`n_compl_tok` 也不计 EOS |
+| `completion` **末尾无 `\n`** | MiniOneRec 原文有，但在 Trie 下必被 -inf 屏蔽，永远生成不出来 → 死权重 |
+| 不落 token ids | 双域双格式约 2GB，只存长度；ids 由训练端现算 |
+
+**逐 token 校验**（`--verify`）：用 MiniOneRec 自己的 `SidSFTDataset` / `SidItemFeatDataset` /
+`FusionSeqRecDataset` 生成 ground-truth `input_ids`，与「verbatim 版」（带引号 + 带 `\n`、
+即 MiniOneRec 逐字复刻）逐 id 比对，**必须 0 差异**；定版与 verbatim 的差异只允许发生在
+「引号」和「尾部 `\n`」两处。报告落 `data/Amazon23/sft_prompts_verify.json`。
+
+⚠️ 校验里的坑：三个 Dataset 的 `sample>0` 都是**随机采样**（`data.py:94` 的 `df.sample()`、
+`data.py:723` 的 `random.sample`），所以必须用 `ds.data`（采样后）逐行构造对比，
+拿自己 jsonl 的前 N 条去对会全错。
+
+**全量长度实测**（`prompts/<fmt>/stats.json`，双域 × 双格式，2026-09-14 全量跑出）：
+
+| 任务 | 样本数 I&S / VG | prompt 均值 | total_max（含 completion+EOS） | >320 |
+|---|---:|---:|---:|---:|
+| T1 `seq2sid` | 208,999 / 435,534 | 107.8 / 111.9 | **179 / 179** | 0 / 0 |
+| T2a `sid2title` | 25,847 / 25,611 | 57.0 / 57.0 | **161 / 143** | 0 / 0 |
+| T2b `title2sid` | 25,847 / 25,611 | 86.6 / 69.7 | **160 / 141** | 0 / 0 |
+| T3 `seq2title` | 208,999 / 435,534 | 111.8 / 115.9 | **277 / 251** | 0 / 0 |
+| T4 `text2sid` | 25,847 / 25,611 | 192.0 / 165.7 | **391 / 362** | **18 / 3** |
+
+（alpaca 与 chatml 相差 1 token，来自 ChatML 的角色标记 ⇒ 长度结论不受格式影响。）
+
+→ **`cutoff_len`：不带 T4 用 320；带 T4 用 400**。T4 只占 4.3% 样本，但把 max 从 277 顶到 392。
+⚠️ MiniOneRec 是 `tokens[-max_len:]` 左侧截断，超长会砍掉 instruction 头部。
+
+```bash
+./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all             # 全量渲染（约 18 分钟）
+./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all --verify    # 逐 token 校验
+```
+
 ---
 
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
@@ -161,14 +231,19 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 ```
 
 **结论**：`sft.py` 可以直接跑，只需把 `sid_index_path` / `item_meta_path` / `train_file`
-指向我们的新路径，并把 `cutoff_len` 从 512 降到 **320**。
+指向我们的新路径，并把 `cutoff_len` 从 512 降到 **400**（只训 T1/T2/T3 时 320 即可）。
+注意 MiniOneRec 的截断是 `tokens[-max_len:]`，**从左侧砍**，超长样本会丢掉 instruction 头部。
 
 ### 4.1 两处必须改的配置（否则白烧显存）
 
 | 项 | V0 | 本项目 | 理由 |
 |---|---|---|---|
-| `cutoff_len` | 512 | **320** | T1/T2/T3 ≤179、T4 ≤309 `[实测]`；512 有 40% 是纯 padding |
+| `cutoff_len` | 512 | **400**（不带 T4 可 320） | `[实测]` 全量：T1 ≤180、T3 ≤277、**T4 ≤392**；512 有 40% 是纯 padding |
 | `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | 需支持 `Video_Games` | `[代码] sft.py:120` 的 `category_dict` 只有 5 个键，VG 会 KeyError |
+
+> ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
+> 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
+> 抽样在长度分布的长尾上不可靠 —— 定 `cutoff_len` 这种"取 max"的场合必须用全量。
 
 ---
 
@@ -197,6 +272,23 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 - 生成式专用：`beam_ceiling@K`、`exp(−valid_ce)`；**MRR 对生成式无意义**（标 n/a）。
 - **三条闸门**（`EVAL_PROTOCOL §5`）：HR@10 > sasrec（I&S **0.0395** / VG **0.0971**）；
   > content_ann（0.0288 / 0.0237）；量级对齐论文（≥0.0422 / ≥0.0868）。
+
+### 5.3 V0 锚点（HR@10 = 0.093）**不可比** —— 别为它锁死任何设计
+
+2026-09-14 纠正。V0 与本项目的差异是**数据集级别的**，不是"换个基座"：
+
+| | V0（MiniOneRec 复刻） | 本项目 v2 |
+|---|---|---|
+| 数据 | Amazon18 | Amazon23 |
+| 划分 | **全局时间 8:1:1** | **plain LOO**（`EVAL_PROTOCOL §1.4`） |
+| 基座 | Qwen2.5-0.5B | Qwen3-0.6B |
+
+三个口径无一相同，HR@10 数字跨过去比较没有意义。**它只剩 sanity check 价值**
+（验证管线没写错、量级不离谱）。
+
+**连带推论**：我们的对照是自己的 4 个 baseline（`sasrec` / `gru4rec` / `twotower_id` / `content_ann`），
+它们与 SFT 模型跑在**同一套 EvalSet** 上。所以**提示词格式怎么选都不影响与 baseline 的可比性**
+——格式选型应该纯粹看"哪个让 SFT 更强"，不用再为保锚点妥协（→ §3.1 选 chatml 的依据）。
 
 ---
 

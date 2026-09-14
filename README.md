@@ -440,9 +440,14 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 
 ## 8. SFT 数据集（M3/M4，2026-09-14 已产出）
 
-在启动 SFT 之前先把"喂给模型的每一条样本"定死 —— 提示词一旦改动，V0 锚点（§3.4）就失效。
+在启动 SFT 之前先把"喂给模型的每一条样本"定死。
 **完整设计依据（文献对照 + 四任务定义 + 口径）见 [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)**；
 验收闸门仍是 [`docs/EVAL_PROTOCOL.md §5`](docs/EVAL_PROTOCOL.md)（HR@10 > sasrec）。
+
+> ⚠️ **已纠正**（2026-09-14）：先前写"提示词改动会让 V0 锚点（§3.4）失效"——**这个说法不成立**。
+> V0 是 Amazon18 + 全局时间 8:1:1 + Qwen2.5-0.5B，本项目是 Amazon23 + LOO + Qwen3-0.6B，
+> 数据集都不同，HR@10 本来就**不可比**（`SFT_PIPELINE §5.3`）。
+> 本项目真正的对照是自己的 4 个 baseline（同一套 EvalSet），与提示词格式无关。
 
 ### 8.1 提示词三流派与本项目选择
 
@@ -452,7 +457,8 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | **B. 指令问答对（本项目）** | **P5**（RecSys'22）／**MiniOneRec**／**LC-Rec**（ICDE'24） | **只落在 target 段** |
 | C. 文本化 ID | **IDGenRec** | 只落在 target 段 |
 
-选 B 的第一理由：**V0 锚点就是 B 形态跑出来的**，换成 A 会连"历史段算不算 loss"一起改，M3 首跑即失去可比性。
+选 B 的理由：**只对 target 段计 loss**（历史段是纯条件，0.6B 小模型不该把容量花在"复述历史"上），
+且只有 B 形态能把 T2/T4 这类"SID ↔ 文本"对齐任务塞进同一个 batch（LC-Rec 的 alignment 主张）。
 LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸收成本项目的 T2/T3/T4。
 
 ### 8.2 四个任务（模板落盘在 `info/prompt_templates.json`）
@@ -477,13 +483,46 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 → **`cutoff_len` 从 V0 的 512 降到 320**（有 40% 是纯 padding）；
 **`sft.py` / `data.py` 一行不用改**，只需换路径 + 把 `category_dict` 加上 `Video_Games`。
 
-### 8.4 碰撞桶的映射口径（本项目特有）
+### 8.4 明文 prompt 渲染（`scripts/data/build_sft_prompts.py`，双格式）
+
+§8.2 的产物是结构化中间态，`build_sft_prompts.py` 再渲染成**明文 prompt**，双格式各一套：
+
+| 格式 | 形态 | 用途 |
+|---|---|---|
+| **`chatml`** | `<\|im_start\|>system/user/assistant` | **主榜 Run-0**：Qwen3 原生格式，与预训练一致 |
+| `alpaca` | `### Instruction / ### User Input / ### Response` | 格式消融对照（非为比 V0） |
+
+口径（2026-09-14 定版）：
+
+- **所有引号一律去掉**，SID / title / text 全裸写 —— `<a_5>` 的尖括号本身是定界符，
+  且 completion 里带引号会让 Trie 约束解码的首 token 变成 `"` 而不是 `<a_*>`
+- **completion 末尾不加 `\n`** —— MiniOneRec 原文有，但在 Trie 下必被 −inf 屏蔽，是死权重
+- completion 不含 EOS（训练端 `encode(eos=True)` 追加）
+- T1 的 input 保留 instruction 原句重复（去掉后指令不够明确）；history 一律用 SID 序列
+
+**逐 token 校验**：用 MiniOneRec 三个 Dataset 类生成 ground truth，与"verbatim 复刻版"逐 id 比对，
+要求 0 差异（报告 `data/Amazon23/sft_prompts_verify.json`）。
+`[实测]` 双域各抽 100 条：T1 100/100、T2a 49/49、T2b 51/51、T3 100/100 **全部逐 token 一致**。
+
+`[实测]` 全量长度（双域 × 双格式，共 173 万条）：
+
+| 任务 | 样本数 I&S / VG | total_max（含 completion+EOS） | >320 |
+|---|---:|---:|---:|
+| T1 `seq2sid` | 208,999 / 435,534 | 179 / 179 | 0 / 0 |
+| T2 `sid↔title` | 51,694 / 51,222 | 161 / 143 | 0 / 0 |
+| T3 `seq2title` | 208,999 / 435,534 | 277 / 251 | 0 / 0 |
+| T4 `text2sid` | 25,847 / 25,611 | **391 / 362** | **18 / 3** |
+
+→ **`cutoff_len` 从 320 修正为 400**（带 T4 时）。之前 §8.3 报的"T4 max 309"是**抽样**值，
+全量真值 391 —— 定 max 类参数必须用全量，抽样会漏长尾。
+
+### 8.5 碰撞桶的映射口径（本项目特有）
 
 SID 定版为语义桶，一个 SID 可能对应 2~5 个物品（I&S 碰撞 7.92%）。
 **主榜用严格口径**：每桶取训练频次最高的 1 个物品作代表（平局取最小 item_id，无泄漏），
 与 baseline 同构；宽松口径（目标 ∈ 整桶即命中）单独报作上界 → `EVAL_PROTOCOL §3.4.2`。
 
-### 8.5 复现
+### 8.6 复现
 
 ```bash
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain IandS   # ~24 s
