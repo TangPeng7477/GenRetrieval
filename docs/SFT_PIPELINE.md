@@ -275,12 +275,42 @@ sft.py:266  DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, padding=True
 
 → **选 A**。重生成只在"想把 max 压到 320 以省显存"时才值得，而动态 padding 下这点收益可以忽略。
 
-> ⚠️ **顺带实测到的训练端隐患**：`sft.py:157` 设了 `padding_side="left"`（给生成用的，**训练应 right**），
-> 且 `[实测]` `DataCollatorForSeq2Seq`（transformers 4.57.1）**不生成 `position_ids`**
-> —— 输出只有 `input_ids / attention_mask / labels` 三个键。
-> 后果：left padding 下短样本的真实 token 位置从 `offset` 开始而非 0。
-> Qwen3 是纯 RoPE（相对位置），整体平移对 attention 影响有限，**但这是非标准做法，首跑要盯着 loss**。
-> 修法一行：`sft.py:157` 改成 `padding_side="right"`（evaluate 生成端保持 left）。**尚未改，待 Run-0 验证后再动。**
+### 4.3 padding 方向：left 还是 right（**已改 `sft.py` 为 right**）
+
+**left padding = 在序列开头（提示词前面）补 pad**，效果是全部样本**右端对齐**；right padding 反之。
+
+| 场景 | 该用 | 原因 |
+|---|---|---|
+| **训练** | **right** | 真实 token 从位置 0 起算，与预训练时的位置分布一致 |
+| **批量生成** | **left**（必须） | decoder-only 每步取 `logits[:, -1, :]`；只有右端对齐时最后一列才是"真实的下一个 token 位置"。right padding 会让模型从 pad 后面接着生成，直接崩 |
+
+MiniOneRec 是把生成端的设置（`evaluate.py:140`）顺手复制到了训练端（`sft.py`）造成的，属于复制粘贴遗留。
+
+**对 Qwen3-0.6B：left 与 right 数学等价，`[实测]` 三条依据**
+
+1. **无绝对位置编码** —— config 里没有 `position_embedding_type`，纯 RoPE；
+   `sliding_window=None`、`use_sliding_window=False`、`rope_scaling=None`
+2. **`position_ids` 不看 attention_mask** —— `modeling_qwen3.py:382-383` 是
+   `position_ids = cache_position.unsqueeze(0)` 即 `arange(L)`；且 `[实测]` `DataCollatorForSeq2Seq`
+   （transformers 4.57.1）**不生成 `position_ids`**，输出只有 `input_ids / attention_mask / labels`
+3. **RoPE 的 attention 只依赖相对距离** `(m-n)` → 位置整体平移不改变任何 attention 值
+
+→ 所以 left padding 训练 Qwen3 **不会掉点**（MiniOneRec V0 能跑通也印证了）。
+
+**但仍然是 bug，已改**：它是复制粘贴而非设计，且只在"纯 RoPE + 无 sliding window + 无 rope_scaling"
+这个特定组合下才等价，任一条不满足就会错。改成 right 不影响数字（等价），只是去掉一个非标准疑点。
+
+**§实测 附带查证的一个坑（结论：安全）**：`tokenizer.pad_token = tokenizer.eos_token`
+→ `pad_token_id == eos_token_id == 151645`。担心 collator 会把**真 EOS 的 label 一起屏蔽掉**
+（那样模型就学不会停）。实测两种 padding 下真 EOS 都保留：
+
+```
+left : 短样本 labels = [-100 ×20, <a_5>, <b_23>, <c_66>, 151645]   ← 真 EOS 在末位，保留 ✅
+right: 短样本 labels = [-100 ×5,  <a_5>, <b_23>, <c_66>, 151645, -100 ×15]  ← 保留 ✅
+```
+
+`DataCollatorForSeq2Seq` 只用 `label_pad_token_id(-100)` **填充**、不做 `==` 替换，所以安全。
+（对比：`DataCollatorForLanguageModeling` 会执行 `labels[labels == pad_token_id] = -100`，那个才真会出事。）
 
 ---
 

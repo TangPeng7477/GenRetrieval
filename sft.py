@@ -154,7 +154,11 @@ def train(
     original_vocab_size = len(tokenizer)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.padding_side = "left"
+    # 训练用 right padding（标准做法）：真实 token 从位置 0 起算，与预训练分布一致。
+    # 生成端（evaluate.py:140 + 手工左填充 evaluate.py:166）单独设 left，不受这里影响。
+    # 注：Qwen3 纯 RoPE 下 left/right 数学等价（attention 只依赖相对距离），
+    #     但 left 是生成端设置的复制粘贴，换 sliding window / rope_scaling 就会错。
+    tokenizer.padding_side = "right"
     new_tokens = []
 
     if sid_index_path and os.path.exists(sid_index_path):
