@@ -1,0 +1,32 @@
+{
+ "alpaca_header": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. \n\n### Instruction:\n",
+ "tasks": {
+  "seq2sid": {
+   "instruction": "Can you predict the next possible item that the user may expect?",
+   "input": "The user has interacted with items {hist} in chronological order. Can you predict the next possible item that the user may expect?",
+   "output": "{target}",
+   "hist_sep": ", "
+  },
+  "sid2title": {
+   "instruction": "Answer the question about item identification.",
+   "input": "What is the title of item \"{sid}\"?",
+   "output": "{title}"
+  },
+  "title2sid": {
+   "instruction": "Answer the question about item identification.",
+   "input": "Which item has the title: {title}?",
+   "output": "{sid}"
+  },
+  "seq2title": {
+   "instruction": "Can you recommend the next item for the user based on their interaction history?",
+   "input": "The user has sequentially interacted with items {hist}. Can you recommend the next item for him? Tell me the title of the item",
+   "output": "{title}",
+   "hist_sep": ", "
+  },
+  "text2sid": {
+   "instruction": "Answer the question about item identification.",
+   "input": "An item can be described as follows: \"{text}\". Which item is it describing?",
+   "output": "{sid}"
+  }
+ }
+}

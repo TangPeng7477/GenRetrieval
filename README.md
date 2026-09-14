@@ -7,10 +7,11 @@
 在 [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) 开源框架上做的系统性升级：
 **Amazon Reviews 2023 + 图文多模态 → 门控融合 → RQ-VAE 语义 ID（SID）→ LLM 生成式召回**。
 
-> **当前进度（2026-09-13）**：**数据与 SID 构建阶段已在两个域上定版**
+> **当前进度（2026-09-14）**：**数据与 SID 构建阶段已在两个域上定版**
 > —— 域 A `Industrial_and_Scientific`（25,847 商品）与域 B `Video_Games`（25,611 商品）
-> 各跑完完整 pipeline（M1 / M2 完成）；**召回阶段基线矩阵已建好并本地实跑**（见 §7 与 [`baseline/`](baseline/)），
-> SFT / RL 阶段（M3~M5）待上云启动。
+> 各跑完完整 pipeline（M1 / M2 完成）；**召回阶段基线矩阵已建好并本地实跑**（见 §7 与 [`baseline/`](baseline/)）；
+> **SFT 数据集（M3 前置）双域已产出并通过体检**（见 §8 与 [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)），
+> SFT 训练 / RL 阶段待上云启动。
 > 本 README 讲"项目是什么、SID 怎么定版的、怎么复现"；
 > 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)**。
 
@@ -333,6 +334,7 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |
 | **[docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)** | **召回评估协议定版**：数据集划分依据 + 指标定义 + 冷/热分桶 + 报数模板 + 给 SFT/RL 的三条闸门 |
+| **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)** | **SFT 唯一入口**：提示词设计依据（文献对照）+ 四任务数据集规格 + 体检实测 + 碰撞映射口径 |
 | **[baseline/SURVEY.md](baseline/SURVEY.md)** | **召回基线文献综述**：经典/生成式 baseline 清单、公开数字（标核验等级）、能/不能横比的原因 |
 | [baseline/README.md](baseline/README.md) | 召回基线的评估口径、复现设置与命令、踩坑记录 |
 | [baseline/RESULTS.md](baseline/RESULTS.md) | 双域基线实测结果表（自动生成，随跑随更新） |
@@ -436,7 +438,65 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 
 ---
 
-## 8. 引用
+## 8. SFT 数据集（M3/M4，2026-09-14 已产出）
+
+在启动 SFT 之前先把"喂给模型的每一条样本"定死 —— 提示词一旦改动，V0 锚点（§3.4）就失效。
+**完整设计依据（文献对照 + 四任务定义 + 口径）见 [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)**；
+验收闸门仍是 [`docs/EVAL_PROTOCOL.md §5`](docs/EVAL_PROTOCOL.md)（HR@10 > sasrec）。
+
+### 8.1 提示词三流派与本项目选择
+
+| 流派 | 代表 | 训练信号落在哪 |
+|---|---|---|
+| A. 无提示词、平铺 NTP | **TIGER**（NeurIPS'23） | 整条序列（含历史段） |
+| **B. 指令问答对（本项目）** | **P5**（RecSys'22）／**MiniOneRec**／**LC-Rec**（ICDE'24） | **只落在 target 段** |
+| C. 文本化 ID | **IDGenRec** | 只落在 target 段 |
+
+选 B 的第一理由：**V0 锚点就是 B 形态跑出来的**，换成 A 会连"历史段算不算 loss"一起改，M3 首跑即失去可比性。
+LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸收成本项目的 T2/T3/T4。
+
+### 8.2 四个任务（模板落盘在 `info/prompt_templates.json`）
+
+| 任务 | 输入 → 输出 | 样本数（I&S / VG，train） |
+|---|---|---|
+| **T1 `seq2sid`**（主） | 历史 SID 序列 → 目标 SID，**提示词与 MiniOneRec 逐字一致** | 208,999 / 435,534 |
+| **T2 `sid↔title`** | 物品标题 ↔ SID 双向 | 51,694 / 51,222 |
+| **T3 `seq2title`** | 历史 SID → 目标标题 | 同 T1 |
+| **T4 `text2sid`**（新增） | `title+brand+categories+features` → SID | 25,847 / 25,611 |
+
+### 8.3 体检实测（`scripts/data/verify_sft_data.py`，`data/Amazon23/sft_verify.json`）
+
+| 检查项 | IandS | VG |
+|---|---:|---:|
+| 768 个 SID token 各占 **1 个 token** | ✅ | ✅ |
+| CSV ↔ index.json 往返一致 | 0 条不一致 | 0 条不一致 |
+| T1 total 长度 max（含 target+EOS） | **179** | **179** |
+| T4 total 长度 max | 309 | 221 |
+| MiniOneRec 三个 Dataset 类直接可用 | ✅ | ✅ |
+
+→ **`cutoff_len` 从 V0 的 512 降到 320**（有 40% 是纯 padding）；
+**`sft.py` / `data.py` 一行不用改**，只需换路径 + 把 `category_dict` 加上 `Video_Games`。
+
+### 8.4 碰撞桶的映射口径（本项目特有）
+
+SID 定版为语义桶，一个 SID 可能对应 2~5 个物品（I&S 碰撞 7.92%）。
+**主榜用严格口径**：每桶取训练频次最高的 1 个物品作代表（平局取最小 item_id，无泄漏），
+与 baseline 同构；宽松口径（目标 ∈ 整桶即命中）单独报作上界 → `EVAL_PROTOCOL §3.4.2`。
+
+### 8.5 复现
+
+```bash
+./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain IandS   # ~24 s
+./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain VG      # ~35 s
+./.venv/Scripts/python.exe scripts/data/verify_sft_data.py  --domain all
+```
+
+> ⏸ **下一步依赖**：Qwen3-0.6B **权重未下载**（本地只有 tokenizer，约 1.5GB，需沙箱外执行）；
+> M4 的语义初始化已备好码本 `info/codebook.npy` `(3,256,32)`。
+
+---
+
+## 9. 引用
 
 ```bibtex
 @misc{MiniOneRec,
