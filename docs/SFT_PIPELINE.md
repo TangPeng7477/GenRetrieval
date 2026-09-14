@@ -217,7 +217,8 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 | ③ T1 **total max**（含 target+EOS） | **179** | **179** | — |
 | ③ T2 total max | 132 | 99 | — |
 | ③ T3（同 T1 结构） | ≤179 | ≤179 | — |
-| ③ T4 total max | **309** | **221** | 决定 cutoff |
+| ③ T4 total max（**抽样值，已作废**） | ~~309~~ | ~~221~~ | ⚠️ 见下行 |
+| ③ T4 total max（**全量真值**） | **391** | **362** | 决定 cutoff |
 | ④ 首条样本 SID token 数 | 9 = 6 历史 + 3 目标 | 9 | ✅ |
 | ⑤ MiniOneRec 三个 Dataset 类直接可用 | ✅ | — | 见下 |
 
@@ -244,6 +245,42 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 > ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
 > 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
 > 抽样在长度分布的长尾上不可靠 —— 定 `cutoff_len` 这种"取 max"的场合必须用全量。
+
+### 4.2 超长 T4 **不用重生成数据集**，改 `cutoff_len` 即可
+
+定 `cutoff_len` 之前先确认它在哪一层生效，否则会做无用功：
+
+| 层 | 是否截断 | 证据 |
+|---|---|---|
+| `prepare_sft_data.py`（构造四任务） | ❌ 只按**字符**截（`--max_text_chars 512`），不管 token | 无 tokenizer |
+| `build_sft_prompts.py`（渲染明文） | ❌ **只统计 `over_320` 计数，从不截断** | 脚本内无 `[:max_len]` |
+| **`data.py:190-197`（训练端）** | ✅ `tokens[-max_len:]` —— **从左侧砍** | 唯一真正的截断点 |
+
+所以数据集里存的是**明文**，长度是训练时才决定的 —— **改参数就够了，不用重生成**。
+
+**代价也确实为零**，因为 padding 是动态的（`[实测]`）：
+
+```
+sft.py:266  DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, padding=True)
+→ 模拟 batch（120 / 391 / 130 / 200）→ 输出 shape (4, 392)
+```
+
+`padding=True` 是 **pad 到 batch 内最长再取 8 的倍数**，不是 pad 到 `cutoff_len`。
+所以 `cutoff_len` 320→400 **对 T1/T2/T3 毫无影响**（它们 max 179/161/277，本来就 <320，padding 长度由 batch 内真实最长决定）。
+
+| 方案 | 18/3 条超长样本 | 代价 |
+|---|---|---|
+| **A. `cutoff_len=400`（推荐）** | ✅ 完整保留 | 几乎为零：仅含 T4 长样本的 batch 会 pad 到 ~392 |
+| B. 重生成 T4、砍短 text | ❌ 信息永久丢失 | 且 `--max_text_chars` 默认值不改的话重跑会复原 |
+
+→ **选 A**。重生成只在"想把 max 压到 320 以省显存"时才值得，而动态 padding 下这点收益可以忽略。
+
+> ⚠️ **顺带实测到的训练端隐患**：`sft.py:157` 设了 `padding_side="left"`（给生成用的，**训练应 right**），
+> 且 `[实测]` `DataCollatorForSeq2Seq`（transformers 4.57.1）**不生成 `position_ids`**
+> —— 输出只有 `input_ids / attention_mask / labels` 三个键。
+> 后果：left padding 下短样本的真实 token 位置从 `offset` 开始而非 0。
+> Qwen3 是纯 RoPE（相对位置），整体平移对 attention 影响有限，**但这是非标准做法，首跑要盯着 loss**。
+> 修法一行：`sft.py:157` 改成 `padding_side="right"`（evaluate 生成端保持 left）。**尚未改，待 Run-0 验证后再动。**
 
 ---
 
