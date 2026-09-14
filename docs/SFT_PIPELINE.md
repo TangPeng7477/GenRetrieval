@@ -200,13 +200,92 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 ---
 
-## 6. 待办 / 未做（诚实边界）
+## 6. 训练顺序（课程学习，2026-09-14 定案 `[设计]`，待 Run-1 实测验证）
+
+### 6.1 先给结论：不做"训完 T2 再切 T1"的硬串行
+
+直觉「先让模型认识 SID，再学推荐」是对的，但**形态必须是"warmup → 混合 → 退火"，不能是两个独立训练硬切**。
+
+| 反对硬串行的理由 | 依据 |
+|---|---|
+| 0.6B 容量小，硬切会灾难性遗忘 T2 | 小模型多任务遗忘是常识；无 replay 时尤其明显 |
+| MiniOneRec 默认配比里 **T3 `seq2title` 占 44.5%，与 T1 同权重**，硬切会一起丢掉 | `[实测]` 见 §6.2 计数 |
+| 文献里做 curriculum 的**全部是软过渡，没有硬切** | 见 §6.3 |
+
+### 6.2 三阶段定义
+
+| 阶段 | 任务 | step 占比 | 冻结 | LR | 目的 |
+|---|---|---|---|---|---|
+| **S0 warmup** | T2（sid2title + title2sid）+ T4（text2sid） | ~8%（≈1 epoch on 2N） | `freeze_LLM=True` | 1e-3 | 把 768 个新 token 拉进语义空间 |
+| **S1 主训练** | T1 + T3 + T2 + T4（MiniOneRec 默认比例，见下） | ~80% | 全开 | 5e-4（沿用 V0） | 学序列模式，辅助任务防遗忘 |
+| **S2 退火** | **只 T1** | ~12% | 全开 | 余弦 → 0 | 去掉辅助任务分布干扰，贴合评估口径 |
+
+`[实测]` MiniOneRec `sft.py:202-214` 是 `ConcatDataset([SidSFTDataset, SidItemFeatDataset, FusionSeqRecDataset])`，
+单阶段、不分先后。按我们产物算出的**实际配比**：
+
+| 域 | T1 seq2sid | T2（2N，双向） | T3 seq2title | 合计 | T1 : T3 : T2 |
+|---|---:|---:|---:|---:|---|
+| IandS | 208,999 | 51,694 | 208,999 | 469,692 | **44.5% : 44.5% : 11.0%** |
+| VG | 435,534 | 51,222 | 435,534 | 922,290 | **47.2% : 47.2% : 5.6%** |
+
+⚠️ 注意 **T3 和 T1 一样重** —— MiniOneRec 实际上让一半训练信号去"生成标题"而不是 SID。
+这是它和 TIGER（纯 seq2sid）最大的训练端差异，M4 消融必须单独测 T3 的去留。
+
+### 6.3 文献证据（顺序这个事，论文其实意见不统一）
+
+| 来源 | 做法 | 结论 |
+|---|---|---|
+| **LC-Rec**（ICDE'24，arXiv:2311.09049）官方 `run.sh` | **单阶段 6 任务混合**：`--tasks seqrec,item2index,index2item,fusionseqrec,itemsearch,preferenceobtain`，4 epochs | ⚠️ **不是两阶段**。网上流传的"先对齐再推荐"是把它的**消融实验**（逐步加任务看增益）误当成训练 schedule |
+| **PIT / OneRec-V2**（快手，arXiv:2602.08530） | curriculum：**warm-up 阶段用确定性一对一 SID↔item 映射**，等 User-to-Token loss 收敛到基线再切动态目标 | ✅ **支持"先对齐"**，且是工业级证据 |
+| **MHL**（arXiv:2509.23649） | warm-up 随机 mask → 自适应熵引导 mask → 无 mask 微调 | ✅ 支持"warmup → 主 → 退火"三段式（但 curriculum 在 mask 策略上，不在任务集合上） |
+| **Token-Weighted**（arXiv:2601.17787） | 三个 loss 用指数衰减 $e^{-ct}$ 过渡权重 | ✅ 支持**软过渡**，反对硬切 |
+
+→ 综合：**warmup 有价值（PIT 的工业证据），但过渡要软、且主阶段必须保留辅助任务做 replay。**
+
+### 6.4 `[实测]` 两个必须先知道的实现细节
+
+**(1) `freeze_LLM=True` 已经就是 S0，不用自己写**（`sft.py:173-195`）：
+全参数冻结 → 只解冻 `get_input_embeddings().weight` → **注册 grad hook 把前 `original_vocab_size` 行梯度清零**。
+即：实际只有 768×1024 = 786,432 个参数在动。因为 Qwen3-0.6B 是 `tie_word_embeddings=true`
+（`models/Qwen3-0.6B/config.json`），这个张量同时是 lm_head，所以"只训 embedding"在 tied 下语义正确。
+⚠️ `sft_3090.sh` 默认 `FREEZE_LLM=False` —— **这个开关一直没被用过**。
+
+**(2) `sid2title` 在碰撞桶上是一对多，但可以不管**：
+
+| 域 | 冲突 SID 数 | 占 SID 空间 | 涉及样本 | 占 sid2title | 占全部 T2 |
+|---|---:|---:|---:|---:|---:|
+| IandS | 901 | 3.64% | 1,913 | **7.40%** | 3.70% |
+| VG | 388 | 1.55% | 831 | **3.24%** | 1.62% |
+
+实拍冲突样本（IandS `<a_249><b_229><c_206>`）→ `B&C Eagle B16-1 1-Inch` / `B16-2 2-Inch` / `B16-34 3/4-Inch`
+同系列不同规格；VG → `Pokemon Red Version` / `Blue Version`。
+**判定：不修**。这些是语义近义目标、前缀 token 相同，梯度方向大体一致，属 `sid_raw` 语义桶的设计后果
+（与 §3.4.2 宽松口径同源）。MiniOneRec/TIGER 用 Sinkhorn 保证唯一性所以没这个现象。
+若 Run-1 显示 T2 拖后腿，退路是"T2a 只在桶大小=1 的 SID 上构造"。
+
+**(3) 待权重下载后实测**：Qwen3-0.6B `initializer_range=0.02`，新增 768 行按此初始化；
+预训练 151,936 行的实际 std 需下权重后测。若二者差一个量级，S0 的 LR 要单独调（这是 S0 存在的**最强技术理由**）。
+
+### 6.5 执行队列（每项只改一个变量，否则数字归因不了）
+
+| Run | 改什么 | 回答什么问题 |
+|---|---|---|
+| **Run-0 锚点** | 单阶段，原样复刻 MiniOneRec（T1+T2+T3 concat，3 epoch，LR 5e-4，`cutoff_len` 320） | Qwen3-0.6B 相对 V0（Qwen2.5-0.5B, HR@10=0.093）值多少？ |
+| **Run-1** | Run-0 + S0 warmup | warmup 有没有用？ |
+| **Run-2** | Run-1 + S2 退火 | 退火有没有用？ |
+| **Run-3** | 码本语义初始化（`codebook.npy`）替代 S0 | 能不能省掉 warmup？ |
+
+🔴 **Run-0 必须先跑**：一次改基座 + 配比 + 顺序三个变量，出了数字不知道是谁的功劳。
+
+---
+
+## 7. 待办 / 未做（诚实边界）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
 | LC-Rec 的 `itemsearch` / `preferenceobtain` | ⏸ | 需要额外的"自然语言意图"标注，本项目暂无；T4 已部分覆盖其对齐作用 |
 | 用户侧 token | ⏸ | MiniOneRec 无 user token；CCFRec 等有。本项目用户数 5~9.5 万，加进去词表会再涨 60% |
 | 语义初始化（M4） | ⏸ | `info/codebook.npy` 已备好 `(3,256,32)`，训练端还没接 |
-| 课程学习（M4） | ⏸ | 计划：阶段1 只训 T2/T4（对齐）→ 阶段2 全混合 |
+| 课程学习（M4） | ⏸ | 方案已定案 → **§6**（S0 warmup / S1 混合 / S2 退火）；等 Run-0 锚点跑完再上 |
 | raw 桶 vs 唯一化的端到端消融 | ⏸ | `sid_sk.npy` 已存档，切口径重跑即可 |
 | Qwen3-0.6B 权重 | ⏸ | 本地只有 tokenizer（`models/Qwen3-0.6B/`），**权重未下载**（约 1.5GB，需沙箱外执行） |
