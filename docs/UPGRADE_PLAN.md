@@ -830,8 +830,8 @@ LazyAR 是**推理侧**优化，与我方 Trie 约束解码互补（我们不存
 |---|---|---|---|---|---|---|
 | **MGR-LF++** | CLIP **文本塔** | CLIP **图像塔** | **晚融合**：各自量化成 SID 后进同一序列 | RQ-VAE（**每模态各一套**） | ① 对比模态对齐（i2t + t2i 预训练，再微调推荐）② 模态切换**特殊 token** | T5 backbone；codebook 256 最优；长 ID 适合大数据集 |
 | **MACRec** | LLaMA encoder（+K-Means 伪标签） | ViT encoder（+K-Means 伪标签） | **R2 + R3**：各自 SID，但**量化过程被跨模态监督** | RQ-VAE，**每层**加 InfoNCE | 四项：`L_con`（逐层量化对比）`L_align`（双模态重构对齐）`L_implicit`（编码器侧）`L_explicit`（解码器侧跨模态生成任务） | 🔴 对比损失**从第 3 层开始加**最优（前两层保留模态特有信息）；k-means K=512 |
-| **MSCGRec** | 文本走语义模态 | **RQ-DINO**（量化塞进 DINO 自蒸馏，教师 EMA 稠密） | **各自量化 + 协同当第四模态** | RQ-DINO（图像）；SASRec embedding **单独 RQ**（协同） | 受限序列学习（softmax 限制在前缀树子节点）+ 自适应位置嵌入 | 前缀树约束；缺失模态鲁棒（mask 训练） |
-| **2508.04571** | Sbert (all-mpnet) / LVLM 文本 | ResNet50 / ViT / CLIP / **Qwen2-VL** | 受控对照（**不提出新方法**） | 无（评的是特征，非 SID） | —（含**高斯噪声 / 结构化噪声合成基线**做 placebo） | 5-core（Baby/Pets）/ 10-core（Clothing） |
+| **MSCGRec** | 冻结 **LLAMA** + **事后 RQ**（3×256，不微调） | DINO 预训练 ViT-S/14 **可训练** + **RQ-DINO**（量化塞进 DINO 自蒸馏，教师 EMA 稠密） | 🔴 **不学统一编码**：各模态**各自量化后按模态堆叠**（原文 *does not learn a unified encoding*）+ 协同当第四模态（`§4.6.6(f)`） | RQ-DINO（图像）；SASRec embedding **单独 RQ**（协同） | 受限序列学习（softmax 限制在前缀树子节点）+ 自适应位置嵌入 + 每模态**独立 collision level** + 可学习 mask token（训练时 75% 概率遮蔽某模态） | 前缀树约束（推理 20 beam）；缺失模态鲁棒 |
+| **2508.04571** | Sbert (all-mpnet) / LVLM 文本 | ResNet50 / ViT / CLIP / **Qwen2-VL** | 受控对照（**不提出新方法**）：传统派 = **late-fusion 拼接**（RNet50+Sbert；CLIP 双投影也拼接），LVLM 派 = **完全不融合**（原生嵌入，原话 *eliminating the need for late-fusion*） | 无（评的是特征，非 SID） | —（含**高斯噪声 / 结构化噪声合成基线**做 placebo） | 5-core（Baby/Pets）/ 10-core（Clothing） |
 | **PixRec** | VLM backbone 文本侧 | VLM backbone 图像侧 | 晚融合 + 双塔 | 无 SID（直接生成文本/检索层 BM25） | next-item generation + 对比对齐（user/item 级） | **QLoRA + 单张消费级 GPU** |
 
 **各篇的关键数字（引用前请回原文核对）**：
@@ -865,7 +865,42 @@ LazyAR 是**推理侧**优化，与我方 Trie 约束解码互补（我们不存
 | **V4-P** | **晚融合对照臂（R2 路线）**：文本、图像**各自量化成 SID**（复用现成 RQ-VAE，码本共用或分立），拼成 `[text_SID][SEP][img_SID]`，下游走同一 `sid_prefix` 闸门 | MGR-LF++（早融合 modality collapse 的直接对照） | 中（两域各跑一次量化 + `sid_prefix`，≈ 2 h/域） | ① 三件套不劣于 `gate` 单序列；② `sid_prefix` HR@10 高于 `gate` 路线的同口径值。**两条都过才换路线** |
 
 > ⚠️ **落地顺序**：**V4-O 应排在 V4-K / V4-M 之前先做** —— 它零成本、且是唯一能一票否决整个图文方向的实验。
-> 若 V4-O 显示图无贡献，则 V4-K/M/P 全部不必做。
+> 若 V4-O 显示图无贡献，则 V4-K/M/P 全部不必做。**第二顺位为 V4-P**（依据见 `(f)`：Amazon 系四篇无一篇走「量化前融合」）。
+
+#### (f) 融合路线的横向对照：Amazon 系论文到底怎么把图文放到一起？
+
+> 回答的问题：「他们的融合方式是怎么样的？」
+> 本节只回答一件事：**图文在链路的哪一点相遇**。四篇 Amazon 论文 + 一篇同版本分析型，
+> 全部回原文核实（MSCGRec / MACRec / 2508.04571 读 HTML 全文），按「相遇点」归位。
+
+| 论文 | 数据版本 | 图文在哪里相遇 | 产物 | 备注 |
+|---|---|---|---|---|
+| **MGR-LF++** | '18 | **量化之后**：各自量化成 SID，再进同一序列 | 两套 SID 序列 | 唯一做了早/晚系统对照；**早融合的病灶 = modality collapse** |
+| **MACRec** | '18 | **量化过程中**（不是之后）：两套独立码本，但**第 3 层起**逐层 InfoNCE 跨模态监督 | 两条 SID 序列，推理**分数平均** | 原文：从第 1 层就加会**抹掉模态特有信息**（一种信息坍塌） |
+| **MQL4GRec** | '18 | **量化时共享码本** | 共享码本 SID | 五篇里唯一「半统一」的路线 |
+| **MSCGRec** | **'23 ✅** | **量化前不融合、量化后不互相干扰**：各模态各自量化，**按模态堆叠**进同一序列；协同信号当**第四个模态**单独量化 | 每模态一条码序列（**各自带 collision level**） | 🔴 原文明确：*does not learn a unified encoding* |
+| **2508.04571** | **'23 ✅** | **根本不融合**：用 LVLM 原生多模态嵌入（`[EOS]` 隐状态），原话 *eliminating the need for late-fusion* | 单一统一嵌入，但由**一个模型内部**产生 | 受控结论：LVLM 原生 > 拼接(RNet50+Sbert) > CLIP 拼接 > 单模态 |
+| **本项目 `gate`** | '23 I&S/VG | **量化之前**：图文融成一个向量再量化（R1） | 单条 SID 序列 | 这条走廊里**唯一**做「量化前融合」的 |
+
+🔴 **本节最重要的一条：四篇 Amazon 论文里，没有一篇走「量化前融成一个向量」的路线**（MQL4GRec 只到共享码本）。
+归纳下来只有两条组织原理：
+
+1. **让每个模态保留自己的层级结构**，跨模态信息由**序列模型**去抽取 —— MSCGRec 原话
+   *"does not learn a unified encoding but instead leverages the different hierarchical structures of the modalities"*；
+   用后一层 VQ 去补偿语义损失（MACRec 从第 3 层起加对比）。
+2. **让「统一」发生在编码器内部**（LVLM 原生嵌入 / GR4AD 的 IT 阶段），而非在冻结编码器之外补一层 —— 即 `§4.6.1` 路线②。
+
+> ⚠️ **这不等于「我方 `gate` 是错的」**：我方离线消融里 text→gate 的共现召回 R@10 是 **+33% / +41%**，
+> `gate` 确实在起作用。但它说明一件事：**「`gate`（量化前融合）vs「按模态各自量化再拼序列」（V4-P）这个对照，我们从未跑过**，
+> 而同题材论文全部选择了后者或其变体。→ **V4-P 由「对照臂」升级为「第一优先级的对照实验」**，
+> 仍排在 **V4-O 之后**：V4-O 先判「图有没有被用」，V4-P 再判「该怎么用」。
+
+**另外两个可抄的细节（都是收窄预期，不是涨预期）**：
+
+- **MSCGRec 每模态独立 collision level**（保证该模态内编码唯一）—— 与我方「raw 语义桶不做唯一化消解」的选择相反。
+  但两边 collision 的定义不同（见 `§4.6.5` 警告），**不可横比**，不据此推翻 `SID_PIPELINE §8` 的定版。
+- **同一篇里文本用事后 RQ、图像才用 RQ-DINO**（MSCGRec：文本侧 = 冻结 LLAMA + 事后 RQ 3×256）。
+  即「学习式量化」的收益是**模态相关**的，不是普适结论 → **收窄 V4-M 的预期**（对应图像侧有效，文本侧作者自己没做）。
 
 ---
 
