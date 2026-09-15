@@ -361,26 +361,59 @@ tokenizer.eos_token = "<|im_end|>"   # 与 chat_template 对齐；Base 默认值
 
 | 角色 | 仓库 | 体积 | 权重文件 |
 |---|---|---|---|
-| student | `Qwen/Qwen3-0.6B` | **1.50 GB** | `model.safetensors`（**单文件，不分片**） |
-| teacher | `Qwen/Qwen3-1.7B` | **4.06 GB** | `model-00001-of-00002`(3.44G) + `model-00002-of-00002`(0.62G) + `index.json` |
+| student | `Qwen/Qwen3-0.6B` | **1.50 GB** / 1,503,300,328 B | `model.safetensors`（**单文件，不分片**） | `f47f7117…6874b` |
+| teacher | `Qwen/Qwen3-1.7B` | **4.06 GB** / 4,063,515,592 B | `model-00001-of-00002`(3,441,185,608 B) + `model-00002-of-00002`(622,329,984 B) + `index.json` | `169ad53e…30ed5` / `912becff…deff9` |
 
-> 🔴 **必须在沙箱外执行**：1.5 GB 走沙箱的 ~118 kB/s 限速要 3 小时以上。
+**`[实测]` 默认源已改为 ModelScope，不再走 `hf-mirror.com`**（2026-09-16 定）。
+理由是一晚实测撞出来的：`hf-mirror.com` **在 TLS 层间歇性断流**，`/resolve/...` 与 `/api/...` 都会抛
+`SSLError(SSL: UNEXPECTED_EOF_WHILE_READING)`（大文件 resolve 端点 5 次尝试挂了 4 次），
+且 HEAD 偶尔不带 `X-Repo-Commit` 头 → `huggingface_hub` 抛
+`FileMetadataError → LocalEntryNotFoundError`（`file_download.py:1568` / `:1661`）。
+致命的是 `file_download.py:1600-1602` 会把裸 `SSLError` 直接抛出工作线程，
+**任一 worker 抖一下，整个 snapshot 就中止** —— 这才是"Fetching 10 files 卡在 8/10"的机制
+（**是链路问题，不是元数据格式问题**；我先怀疑是镜像绝对跳转丢 header，实测被否掉了）。
+
+改走 `https://modelscope.cn/models/<repo>/resolve/master/<file>`：
+`[实测]` 302 落到 **`cdn-lfs-cn-1.modelscope.cn`**（国内 CDN，不绕 CloudFront）、
+支持 Range/206（**可续传**）、且与 HF 是**同一份字节** —— 三处哈希互相印证：
+
+| 来源 | sha256（0.6B `model.safetensors`） |
+|---|---|
+| `hf-mirror` 的 `X-Linked-Etag` | `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` |
+| ModelScope 的 `X-Linked-Etag` | 同上 |
+| ModelScope LFS 对象路径 `lfs-objects/f4/7f/7117…`（**按内容哈希寻址**） | 同上 |
+
+> ⚠️ 诚实边界：`huggingface.co` 本网络返回 **502**，**官方站没能充当第三方独立来源**；
+> 上面三处本质同源（都指向 HF 的 LFS 对象），严格说是"两次镜像 + 一次对象存储自证"。
+
+**`[实测]` 速差（同一网络，2026-09-16）**：ModelScope 路径 **~5.5 MB/s**（110 s 落 607,877,910 B）；
+`hf-mirror → cas-bridge.xethub.hf.co` 路径 **~0.7 MB/s** 且伴随断流，**差约 8 倍**。
+> 与 `EXPERIMENT_LOG E-09`（沙箱内 118 kB/s vs 沙箱外 6.06 MB/s）并存：本次**在沙箱内**直连
+> ModelScope 就跑到 5.5 MB/s，**未复现 118 kB/s 限速**。两种观测不算冲突，但也没被解释，
+> 先如实并列记着；>100MB 的下载仍建议放沙箱外跑。
 
 ```powershell
-# Windows / PowerShell（默认 student；加 -Target all 连 teacher 一起下）
+# Windows / PowerShell（默认 student + ModelScope 源）
 powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1
 powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -Target all
-powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -DryRun     # 只看计划
+powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -Source hf   # 退回 huggingface_hub
+powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -DryRun      # 只看计划
 ```
 
 ```bash
 # Linux / 上云 3090
 bash scripts/download_base_models.sh                  # student
 bash scripts/download_base_models.sh --target all     # + teacher
-bash scripts/download_base_models.sh --direct         # 走 huggingface.co（默认为 hf-mirror）
+bash scripts/download_base_models.sh --source hf      # 退回 huggingface_hub（带重试）
+bash scripts/download_base_models.sh --dry-run
 ```
 
-两个脚本都是**增量**的：目标目录里已有的文件会被校验后跳过，重复执行成本很低。
+两个脚本都是**增量 + 可续传**的：已存在且哈希一致的文件直接跳过，
+半截文件用 `curl -C -` 续传（`hf` 路径靠 `.cache/huggingface/download/*.incomplete`），
+重复执行成本很低。下完**逐个核对 sha256**（`-SkipHash` / `--skip-hash` 可跳过），
+最后跑一次 config + tokenizer + `index.json` 一致性冒烟测试（不占显存）。
+`-Source hf` 路径额外套了**外层重试循环**（默认 6 次，`HF_HUB_DISABLE_XET=1`、`--max-workers 2`）——
+单次 TLS 抖动不再毁掉整个任务。
 
 **`[实测]` 已产出产物零返工（哈希证据）**：`models/Qwen3-0.6B/` 下已有的 5 个 tokenizer 文件，
 sha256 与官方清单**逐个一致** ——
