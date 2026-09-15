@@ -385,7 +385,7 @@ E_init[<a_i>] = W · C_l[i] + b,   W ∈ R^{d_llm × e_dim}
 | VL-CLIP | Walmart，RecSys 2025（arXiv 2507.17080） | 视觉定位（Grounding DINO 抠主体）+ LLM 改写文本；**「不去噪就对齐」的反面教材** | 千万级商品上线；**CTR +18.6% / ATC +15.5% / GMV +4.0%** |
 | Factorized Transport Alignment | **Etsy**，WSDM 2026（arXiv 2512.18117） | 多视图（非主图 + 辅助文本）用最优传输的轻量近似对齐，推理时融合为单向量 | 1M listings；R@500 **+7.9%** |
 | **e5-omni** | 人大 + Würzburg + 早稻田，**2026-01**（arXiv 2601.03666） | 🔴 **「显式对齐」的方法论论文**：指出「继承 VLM 的隐式对齐」不够用，给出三件套（下详） | MMEB-v2：7B 67.8 / 3B 63.6 |
-| PixRec | arXiv 2601.06458（2026-01） | 🔴 **同源数据**：**Amazon Reviews + 商品图片**做序列推荐，双塔 + 混合训练目标 | 报告 top-rank 提升 3×、top-10 +40%（⚠️ 摘要原文含排版乱码，回原文核对） |
+| PixRec | arXiv 2601.06458（2026-01） | ⚠️ **疑似同源**（原文只写 "Amazon Reviews"，**未注明 2018 / 2023**，🔴 2026-09-16 由「同源数据」**降级** → `§4.6.6(a)`）：商品图 + 文本做序列推荐，**VLM backbone 双塔 + 混合目标（next-item 生成 + 对比对齐）+ BM25 检索层**，**QLoRA 单卡可训**（与我方算力画像一致） | top-rank **3×**、top-10 **+40%**（vs 纯文本） |
 
 **e5-omni 的三件套值得单列**——本项目当前的对齐做法是「**事后**岭回归」，它给的是「**训练时**对齐」：
 
@@ -564,7 +564,7 @@ CCA 的典型相关系数谱（白化空间，`s/(n−1)`）：
 |---|---|---|---|
 | **R0 纯文本** | 不合并 | TIGER (NeurIPS'23)、MiniOneRec | 只用 title/description 编码后量化；**本项目的 V0' 锚点在这一族** |
 | **R1 早期融合** | **量化前**融成一个向量 | **GR4AD** (快手广告, 2602.22732, → `§4.6.5`)、**PLUM SID-v2** (Google/YouTube, WWW'26)、**FusID** (2601.08764)、**MMQ** (阿里国际/Lazada, WSDM'26)、**OneMall** (快手电商, 2601.21770)、**Text-as-Vision** 早融合 | concat/门控/MLP/MoE 学一个联合向量，再送 RQ；**本项目现在的 `gate` 融合在这一族** |
-| **R2 晚期融合** | **各自量化**再拼 token 序列 | **MQL4GRec** (KDD'25)、**MSCGRec** (Meta AI+ETH, 2602.03713) | 文本 SID 与图像 SID 各自成序列后拼接/交错；共享码本（MQL4GRec 用小写/大写区分模态）或独立码本 |
+| **R2 晚期融合** | **各自量化**再拼 token 序列 | **MQL4GRec** (ICLR'25)、**MSCGRec** (Meta AI+ETH, 2602.03713) | 文本 SID 与图像 SID 各自成序列后拼接/交错；共享码本（MQL4GRec 用小写/大写区分模态）或独立码本 |
 | **R3 跨模态量化** | **量化过程本身**被跨模态监督 | **MACRec**、**MSCGRec 的 RQ-DINO**、**MoToRec** (AAAI'26) | 双模态伪标签做对比（MACRec）／把 RQ 塞进 DINO 自蒸馏、学生量化、教师 EMA 稠密（RQ-DINO）／稀疏正则化 RQ-VAE（MoToRec） |
 | **R4 协同信号入模** | 把**行为信号**当一等公民接进 SID 链路 | **GR4AD**（Swing 共现 + InfoNCE 作用在 **MLLM last hidden states**，即**进编码器**；→ `§4.6.5(b)(2)`）、**PLUM**（共现对比正则）、**OneRec**（I2I 对比 + caption loss）、**MSCGRec**（SASRec embedding **单独 RQ**）、**MMQ**（behavior-aware 微调）、**MMGRec**（GCN 进 encoder） | 四条不同强度：加一项损失 / 加一个辅助任务 / **当成第四个模态** / 让 CF 反向更新分词器（STE） |
 | 旁支 A | **绕开融合** | **When Text-as-Vision Meets Semantic IDs** (2601.14697) | 把商品描述**渲染成图**、用 OCR 模型编码 → 文本向量天然与图像向量几何兼容，不需要对齐 |
@@ -579,7 +579,7 @@ CCA 的典型相关系数谱（白化空间，`s/(n−1)`）：
 | **OneMall**（快手电商，4 亿 DAU） | Swin-Transformer 视觉 + Qwen2.5-1.5B 文本，InfoNCE 取特殊 token 的隐态；**Res-Kmeans 前两层 + FSQ 最后一层** | **代码冲突率 36% → 11%**、HR@50 **33.9% → 35.4%**；线上商品卡片 **GMV +14.71%** |
 | **MMQ**（阿里国际/Lazada） | **shared-specific 专家**（模态共用 + 模态特有），**正交正则**保低冗余；behavior-aware 微调用 **soft index + STE** 让推荐损失反传分词器 | 线上 **REV +1.29% / CVR +4.33% / GMV +2.61% / ROI +1.18%**；语义 ID 从 6 增到 18 个 token 仍单调变好 |
 | **MSCGRec**（Meta AI + ETH） | 「异构输入、独立量化、统一处理、**单模态解码**」；RQ-DINO；**协同信号当独立模态**；**前缀树约束 softmax** | 首个在**大规模商品库**上超过 SASRec 的生成式方法（Amazon'23 Beauty / Sports / PixelRec） |
-| **MACRec** | 量化阶段引入 **cross-modal quantization**；双模态 k-means 伪标签做跨模态对比；训练阶段隐式+显式对齐 | 降低冲突率、提升码本可用性；在 Musical Instruments / Arts / **Video Games** 上超过 TIGER 与 MQL4GRec |
+| **MACRec**（arXiv **2511.15122**, AAAI'26） | RQ-VAE **每层**加 InfoNCE 跨模态对比（伪标签 = 另一模态 K-Means 聚类中心，**无需跨模态标注**）；另加重构对齐 / 编码器侧隐式对齐 / 解码器侧显式对齐，共四项损失 | 降低冲突率、提升码本可用性；在 Musical Instruments / Arts / **Video Games** 上超过 TIGER 与 MQL4GRec。🔴 **数据 = Amazon'18**，与我方 VG **类目同名但非同一版本** → 禁横比（`§4.6.6(a)(b)`） |
 | **MQL4GRec** | 文本与图像**共享码本**（小写/大写字母区分模态）；三种跨模态生成任务（NIG / AIG / QLA）；**距离重分配**解碰撞 | Amazon 三域 NDCG@10 **+11.58% / +12.56% / +7.66%** |
 | **FusID** | 单一融合网络 + **VICReg 式正则**（`L_cov` 罚子嵌入相关、`L_var` 防塌） + PQ | **零 ID 冲突**、缓解码本欠利用 |
 | **OneSearch**（快手搜索） | **KHQE 关键词增强分层量化**：Qwen-VL 提 item 关键词、Aho-Corasick 提 query 关键词；RQ-Kmeans **4096-1024-512** + 第三层 **balanced k-means 防塌缩** + **OPQ 256-256** 补残差 | 7 天内新商品冷启动 CTR **+3.31%** |
@@ -786,6 +786,86 @@ LazyAR 是**推理侧**优化，与我方 Trie 约束解码互补（我们不存
 | 编号 | 内容 | 出处 | 成本 | 通过判据（可证伪） |
 |---|---|---|---|---|
 | **V4-N** | **多视角 prompt 编码**：对同一段文本用 **k 套模板**分别编码，再 concat/平均后送入融合（**不微调 MLLM**） | GR4AD 的 IT 阶段（6 套 prompt）的**廉价代理** | 极低（k 次额外编码，无需训练、无需下载新权重） | 融合层 `cooccurrence_retrieval_holdout` R@10 **高于现 `text` 单视角基线**；≤ 基线则关闭 |
+
+### 4.6.6 同源论文的精确方法核对：谁真的用了我们这份数据？（2026-09-16 逐篇核实）
+
+> 回答的问题：「不是有几篇论文也基于这个数据集吗，能不能精确找到他们的方法？」
+> 本节把候选论文落到六列：**数据版本 / 类目 / 编码器 / 融合位置 / 量化器 / 监督信号**，
+> 全部读原文（或原文 HTML 全文）核实，**不用二手转述**。
+
+#### (a) 第一道筛子：数据版本 —— 决定「能不能横比」
+
+| 论文 | 出处 | 数据版本 | 类目 | 与我方的关系 |
+|---|---|---|---|---|
+| **MGR-LF++**（Snap + UMich） | arXiv **2503.23333** | **Amazon'18**（原文引 Ni et al. 2019） | Toys / Beauty / Sports | 类目不同；**但它是唯一系统对比「早融合 vs 晚融合」的工作** → (d)① |
+| **MACRec** | arXiv **2511.15122**（AAAI'26） | **Amazon'18**（原文："between May 1996 and October 2018"） | Instruments / Arts / **Video Games** | 🔴 **类目名与我方 VG 相同、版本不同** → 禁横比 |
+| **MQL4GRec** | **ICLR'25** | **Amazon'18**（仓库脚本 `amazon18_data_process.py`） | 6 源域 + Instruments / Arts / **Games** | 同上 |
+| **MSCGRec** | arXiv **2602.03713**（Meta AI + ETH） | **Amazon'23** ✅ | Beauty / Sports + PixelRec | **同版本、不同类目**；唯一在 '23 上做图文 SID 的 |
+| 多模态是否真被利用（分析型，非方法） | arXiv **2508.04571** | **Amazon'23** ✅ | Baby / Pets / Clothing | 同版本、不同类目；**方法学可直接借用** → (d)④ |
+| **PixRec** | arXiv **2601.06458** | "Amazon Reviews"（**原文未注明版本**） | 未明确 | ⚠️ 版本不明，**不能当同源证据** → `§4.6.4` 中「同源数据」标注须降级为「疑似」 |
+
+🔴 **核实结论（本节最重要的一条）：目前没有找到任何一篇「在 Amazon Reviews 2023 的 I&S / VG 上做图文 SID」的论文。**
+最接近的两篇是 **MSCGRec**（同版本 '23，Beauty/Sports）与 **MACRec**（同类目 Video Games，2018 版）。
+→ **这个格子是空的。空位本身即定位依据：2023 版 I&S/VG + 图文 SID 目前无人占。**
+
+> ⚠️ **顺带修正**：本章 `§4.6.4` 表格此前把 **MQL4GRec 标为 KDD'25**（与其 ICLR'25 会议论文 PDF 不符），
+> 已于 2026-09-16 修正为 **ICLR'25**。
+
+#### (b) 把「不能横比」量化：数据规模对照
+
+| 数据集 | #Users | #Items | #Interactions | 切分 |
+|---|---:|---:|---:|---|
+| **我方 IandS（Amazon'23）** | 50,985 | **25,847** | 310,965 | LOO（`*.stats.json` 实测） |
+| **我方 VG（Amazon'23）** | 94,762 | **25,611** | 625,054 | LOO（同上） |
+| MQL4GRec / MACRec **Games**（Amazon'18） | 42,259 | 13,839 | 373,514 | LOO |
+| MSCGRec **Beauty**（Amazon'23） | ~720,000 | 203,843 | 6,420,000 | LOO, 5-core |
+| MSCGRec **Sports**（Amazon'23） | ~400,000 | 151,632 | 3,430,000 | LOO, 5-core |
+
+🔴 我方 VG 与他们的 **Games 同名类目**，但 items 差 **1.85×**、users 差 **2.24×**。
+即类目名相同，**年份 / 5-core 过滤 / 规模三者都不同** → 数字只能当量级参照（同 `SURVEY §4.3` 的纪律）。
+
+#### (c) 第二道筛子：方法精确拆解（逐篇）
+
+| 论文 | 文本侧 | 图像侧 | 融合发生在 | 量化 | 监督信号 | 关键超参 |
+|---|---|---|---|---|---|---|
+| **MGR-LF++** | CLIP **文本塔** | CLIP **图像塔** | **晚融合**：各自量化成 SID 后进同一序列 | RQ-VAE（**每模态各一套**） | ① 对比模态对齐（i2t + t2i 预训练，再微调推荐）② 模态切换**特殊 token** | T5 backbone；codebook 256 最优；长 ID 适合大数据集 |
+| **MACRec** | LLaMA encoder（+K-Means 伪标签） | ViT encoder（+K-Means 伪标签） | **R2 + R3**：各自 SID，但**量化过程被跨模态监督** | RQ-VAE，**每层**加 InfoNCE | 四项：`L_con`（逐层量化对比）`L_align`（双模态重构对齐）`L_implicit`（编码器侧）`L_explicit`（解码器侧跨模态生成任务） | 🔴 对比损失**从第 3 层开始加**最优（前两层保留模态特有信息）；k-means K=512 |
+| **MSCGRec** | 文本走语义模态 | **RQ-DINO**（量化塞进 DINO 自蒸馏，教师 EMA 稠密） | **各自量化 + 协同当第四模态** | RQ-DINO（图像）；SASRec embedding **单独 RQ**（协同） | 受限序列学习（softmax 限制在前缀树子节点）+ 自适应位置嵌入 | 前缀树约束；缺失模态鲁棒（mask 训练） |
+| **2508.04571** | Sbert (all-mpnet) / LVLM 文本 | ResNet50 / ViT / CLIP / **Qwen2-VL** | 受控对照（**不提出新方法**） | 无（评的是特征，非 SID） | —（含**高斯噪声 / 结构化噪声合成基线**做 placebo） | 5-core（Baby/Pets）/ 10-core（Clothing） |
+| **PixRec** | VLM backbone 文本侧 | VLM backbone 图像侧 | 晚融合 + 双塔 | 无 SID（直接生成文本/检索层 BM25） | next-item generation + 对比对齐（user/item 级） | **QLoRA + 单张消费级 GPU** |
+
+**各篇的关键数字（引用前请回原文核对）**：
+
+| 论文 | 数字 |
+|---|---|
+| **MGR-LF++** | 早融合 MGR-EF（Toys MRR **0.0231**）≈ 晚融合 MGR-LF（0.0220）< **MGR-LF++（0.0280）**；LF++ 比 LF **+20%**；两者比纯文本 TIGER(CLIP-text) 已 **+7%**。早融合的病灶 = **modality collapse**（文本主导，AMI 重叠 0.48~0.64）；晚融合的病灶 = **correspondence 失败**（联合预测 Hits@5 0.0598→0.0482） |
+| **MACRec** | Games HR@10 **0.1078** > MQL4GRec 0.1007 > TIGER 0.0857；**移除 `L_con` 掉最多**（0.1078→0.1018）；ID 碰撞率 text **3.51%→2.91%** |
+| **MSCGRec** | Beauty Recall@1 **0.0060（+11.1%）**；**RQ-DINO 0.0173 vs 事后 RQ 0.0158 = +9.5%**；Shapley 归因：协同 **0.0135** > 文本 0.0099 > 图像 0.0076 |
+| **2508.04571** | Borda 排名：**Qwen2-VL 50.0 > Phi-3.5-VI 46.0 > RNet50-Sbert 38.0 > RNet50 16.5 > ViT 16.0 > CLIP 13.5**；噪声基线 Recall@20 仅 **Baby 1.05% / Pets 0.036% / Clothing 0.028%** |
+| **PixRec** | top-rank **3×**、top-10 **+40%**（vs 纯文本） |
+
+#### (d) 从这五篇里能直接抄的四件事
+
+| # | 抄什么 | 出处 | 对应我方哪条消融 |
+|---|---|---|---|
+| ① | **晚融合作为对照臂**：文本 SID 与图像 SID **各自量化**再拼序列，看是否优于「融合成一个向量再量化」（我方 `gate` 路线） | MGR-LF++（唯一做早/晚系统对比的） | **V4-P（新增）** |
+| ② | **共现/跨模态监督进量化损失**，且**从第 3 层（而非第 1 层）开始加**；伪标签用另一模态的 K-Means 中心 → **不需要跨模态标注** | MACRec（消融里单项贡献最大） | 收窄 **V4-K** 的超参空间 |
+| ③ | **学习式量化 > 事后量化**：RQ-DINO 比「冻结编码器 + 事后 RQ」**+9.5%**；协同信号当独立模态（Shapley 贡献最大） | MSCGRec | 支撑 **V4-M / V4-L** |
+| ④ | 🔴 **噪声对照法（placebo）**：把图像特征换成**高斯噪声**，看指标掉不掉。掉 → 图真被用了；不掉 → 融合是摆设。**成本为零、结论最硬** | 2508.04571（该文的核心方法学） | **V4-O（新增）** |
+
+> ⚠️ **同时注意一条反向证据**：2508.04571 的 Borda 排名里 **CLIP 位列末位（13.5）**，
+> 而 LVLM（Qwen2-VL）第一。这**不是**说 CLIP 系不能用，而是说「**换更强的跨模态编码器**」
+> 与「**把已有两塔接好**」相比，前者在受控实验里并不稳赢 —— 与我方 `§4.6.4(b)` 的三份反直觉证据同向。
+
+#### (e) 由本节新增的两条消融
+
+| 编号 | 内容 | 出处 | 成本 | 通过判据（可证伪） |
+|---|---|---|---|---|
+| **V4-O** | **模态 placebo 对照**：把 `gate` 的图像输入替换为①同形状高斯噪声 ②打乱 item↔image 对应关系（shuffle），重算共现召回 R@10。**不训练** | 2508.04571 的 noise-baseline 方法学 | **极低**（零训练，仅前向 + 评估，分钟级） | 真实图 R@10 必须**显著高于**两种 placebo；若持平 → 宣告「**图文融合无收益**」，据此关闭整个图文方向（这是最省钱的证伪路径） |
+| **V4-P** | **晚融合对照臂（R2 路线）**：文本、图像**各自量化成 SID**（复用现成 RQ-VAE，码本共用或分立），拼成 `[text_SID][SEP][img_SID]`，下游走同一 `sid_prefix` 闸门 | MGR-LF++（早融合 modality collapse 的直接对照） | 中（两域各跑一次量化 + `sid_prefix`，≈ 2 h/域） | ① 三件套不劣于 `gate` 单序列；② `sid_prefix` HR@10 高于 `gate` 路线的同口径值。**两条都过才换路线** |
+
+> ⚠️ **落地顺序**：**V4-O 应排在 V4-K / V4-M 之前先做** —— 它零成本、且是唯一能一票否决整个图文方向的实验。
+> 若 V4-O 显示图无贡献，则 V4-K/M/P 全部不必做。
 
 ---
 
