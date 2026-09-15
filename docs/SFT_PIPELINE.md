@@ -354,6 +354,50 @@ tokenizer.eos_token = "<|im_end|>"   # 与 chat_template 对齐；Base 默认值
 > 另有 `[实测]`：官方 **2507（Instruct-only 非思考版）只覆盖 235B-A22B / 30B-A3B / 4B，无 0.6B**
 > → 想靠"换官方非思考版"绕开 thinking，在 0.6B 档位不存在。
 
+### 4.5 基座权重下载（`scripts/download_base_models.{ps1,sh}`）
+
+定案：**student = `Qwen/Qwen3-0.6B`（post-trained）**，`Qwen3-0.6B-Base` 仅作探针对照、**默认不下载**。
+`[实测]` 规格（2026-09-16 取自官方仓库文件清单）：
+
+| 角色 | 仓库 | 体积 | 权重文件 |
+|---|---|---|---|
+| student | `Qwen/Qwen3-0.6B` | **1.50 GB** | `model.safetensors`（**单文件，不分片**） |
+| teacher | `Qwen/Qwen3-1.7B` | **4.06 GB** | `model-00001-of-00002`(3.44G) + `model-00002-of-00002`(0.62G) + `index.json` |
+
+> 🔴 **必须在沙箱外执行**：1.5 GB 走沙箱的 ~118 kB/s 限速要 3 小时以上。
+
+```powershell
+# Windows / PowerShell（默认 student；加 -Target all 连 teacher 一起下）
+powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1
+powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -Target all
+powershell -ExecutionPolicy Bypass -File scripts\download_base_models.ps1 -DryRun     # 只看计划
+```
+
+```bash
+# Linux / 上云 3090
+bash scripts/download_base_models.sh                  # student
+bash scripts/download_base_models.sh --target all     # + teacher
+bash scripts/download_base_models.sh --direct         # 走 huggingface.co（默认为 hf-mirror）
+```
+
+两个脚本都是**增量**的：目标目录里已有的文件会被校验后跳过，重复执行成本很低。
+
+**`[实测]` 已产出产物零返工（哈希证据）**：`models/Qwen3-0.6B/` 下已有的 5 个 tokenizer 文件，
+sha256 与官方清单**逐个一致** ——
+
+| 文件 | sha256（前 12 位） |
+|---|---|
+| `config.json` | `660db3b73d78` |
+| `tokenizer.json` | `aeb13307a71a` |
+| `tokenizer_config.json` | `d5d09f07b48c` |
+| `vocab.json` | `ca10d7e9fb3e` |
+| `merges.txt` | `8831e4f1a044` |
+
+→ 本地这份就是从官方 post-trained 仓库下的，**本文档 §1~§4 所有基于它的实测（173 万条 prompt 长度、
+768 个 SID token 单 token 验证、`cutoff_len=400`）对下载后的权重 100% 有效**。
+
+> 另有 `[实测]`：`Qwen3-1.7B` 的 `tokenizer.json` / `tokenizer_config.json` 哈希与 0.6B **完全相同**
+> → teacher 与 student **同词表**，logit 可直接对齐、无需词表映射（只有 `config.json` 不同 `1ddb5b89`，那是结构差异）。
 
 ---
 
