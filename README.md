@@ -293,7 +293,11 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
   `probe_gate_twins.py`（门控是否用上图像：A/B/C 三类细分）、
   `probe_twin_sinkhorn.py`（孪生组在 raw/sk 下的存活账本）、
   `probe_dataset_stats.py`（双域字段覆盖率 / 评分分布 / 长尾 / 冷启动）、
-  `probe_latent_rank.py`（融合向量与 latent 的有效秩 + L0 码本覆盖 → 死码溯源）
+  `probe_latent_rank.py`（融合向量与 latent 的有效秩 + L0 码本覆盖 → 死码溯源）、
+  `probe_alignment_methods.py`（跨模态「映射到同一语义空间」的方法对比 + 因素正交拆解：
+  降维 / 白化 / 映射族 / 检索空间 / 正则强度，含 `alpha`、`lambda` 扫描与 CCA 截断曲线。
+  **跨模态 R@10：现状 0.58/0.61 → 降维 0.72/0.80 → 再加白化 0.81/0.88**，
+  详见 `docs/UPGRADE_PLAN.md §4.6.3`）
 - **环境**：`scripts/setup_env.sh` | `setup_env.ps1`、`download_models.sh`、`tools/hf_repair_cache.py`
 - **被直接 import 的上游文件**（复制自 MiniOneRec 但在用）：`rq/datasets.py`（EmbDataset）、
   `rq/rqkmeans_faiss.py`（FAISS-RQ 量化器）、`rq/models/{rqvae,rq,vq,layers}.py`
