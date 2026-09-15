@@ -312,18 +312,21 @@ right: 短样本 labels = [-100 ×5,  <a_5>, <b_23>, <c_66>, 151645, -100 ×15] 
 `DataCollatorForSeq2Seq` 只用 `label_pad_token_id(-100)` **填充**、不做 `==` 替换，所以安全。
 （对比：`DataCollatorForLanguageModeling` 会执行 `labels[labels == pad_token_id] = -100`，那个才真会出事。）
 
-### 4.4 换 `-Base` 后 `eos_token` 变了（151645 → 151643）—— **必须显式对齐**
+### 4.4 `eos_token` 在两版权重间不同（151645 vs 151643）—— **只有换 `-Base` 才需要这一节**
 
-基座定案为 `Qwen/Qwen3-0.6B-Base`（理由见 `UPGRADE_PLAN §5.1.1`）。`[实测]` 两份 tokenizer_config：
+基座**默认** `Qwen/Qwen3-0.6B`（post-trained），`-Base` 作对照（选择依据见 `UPGRADE_PLAN §5.1.1`）。
+`[实测]` 两份 tokenizer_config：
 
-| | `Qwen3-0.6B`（post-trained） | **`Qwen3-0.6B-Base`（采用）** |
+| | **`Qwen3-0.6B`（post-trained，默认）** | `Qwen3-0.6B-Base`（对照） |
 |---|---|---|
-| `eos_token` | `<\|im_end\|>` = **151645** | `<\|endoftext\|>` = **151643** |
+| `eos_token` | **`<\|im_end\|>` = 151645**（与 chat_template 天然一致） | `<\|endoftext\|>` = 151643 |
 | `pad_token` | `<\|endoftext\|>` = 151643 | `<\|endoftext\|>` = 151643 |
-| `chat_template` | `<\|im_start\|>` / `<\|im_end\|>` | **相同** |
+| `chat_template` | `<\|im_start\|>` / `<\|im_end\|>` | **语义等价**（4,116 vs 4,168 字符） |
 
-⚠️ 本文档 §1~§4 里所有"EOS = 151645"的表述，都是**基于我们已下的 post-trained tokenizer** 做的实测；
-换 Base 后这个 id 会变。好在链路里三处**都取 `tokenizer.eos_token_id`**，所以在 tokenizer 上设一次即可全链路同步：
+**默认（post-trained）不需要任何处理**：本文档 §1~§4 里所有"EOS = 151645"的实测直接成立。
+
+⚠️ **只有改用 `-Base` 时才要动这一节**：它的 `eos` 是 `<|endoftext|>`(151643)，与 ChatML 模板不一致。
+好在链路里三处**都取 `tokenizer.eos_token_id`**，所以在 tokenizer 上设一次即可全链路同步：
 
 | 位置 | 取值方式 | 换 Base 后 |
 |---|---|---|
@@ -344,7 +347,12 @@ tokenizer.eos_token = "<|im_end|>"   # 与 chat_template 对齐；Base 默认值
 ```
 
 > 另一选择是接受 Base 默认的 `<|endoftext|>(151643)`。但那样 ChatML 的 assistant 段会以一个
-> **非模板终止符**结束，格式不自洽。**选前者。**
+> **非模板终止符**结束，格式不自洽。**换 Base 的话选前者。**
+>
+> ⚠️ `[实测]` **两版 tokenizer 只差 `eos_token` 与 `chat_template` 两个键**；
+> `<|im_end|>`(151645) / `<think>`(151667) / `</think>`(151668) **两版词表里都有** → 改 eos 是纯配置动作，不涉及加词。
+> 另有 `[实测]`：官方 **2507（Instruct-only 非思考版）只覆盖 235B-A22B / 30B-A3B / 4B，无 0.6B**
+> → 想靠"换官方非思考版"绕开 thinking，在 0.6B 档位不存在。
 
 
 ---
