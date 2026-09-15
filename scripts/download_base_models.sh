@@ -251,10 +251,15 @@ if ! $DRY_RUN && [ -n "$PY" ]; then
   echo "Smoke test (config + tokenizer + shard index, no weights in VRAM):"
   for entry in "${PLAN[@]}"; do
     IFS='|' read -r REPO DIR BYTES OTHERS WEIGHTS <<< "$entry"
-    "$PY" - "$MODEL_DIR/${DIR}" <<'PYEOF'
-import json, os, sys
+    # NOTE: run from INSIDE the directory. $PY may be a native Windows python.exe,
+    # which does not understand git-bash paths like /d/Codings/... -- it treats them
+    # as a repo id and transformers raises
+    #   HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
+    # Same root cause as curl_get() above; see EXPERIMENT_LOG E-24.
+    ( cd "${MODEL_DIR}/${DIR}" && "$PY" - <<'PYEOF'
+import json, os
 from transformers import AutoConfig, AutoTokenizer
-p = sys.argv[1]
+p = os.getcwd()
 cfg = AutoConfig.from_pretrained(p)
 tok = AutoTokenizer.from_pretrained(p)
 print('  ' + os.path.basename(p) + ': vocab=' + str(cfg.vocab_size)
@@ -268,6 +273,7 @@ if os.path.exists(idx):
     missing = [s for s in shards if not os.path.exists(os.path.join(p, s))]
     print('    index shards=' + str(shards) + ' missing=' + str(missing))
 PYEOF
+    )
   done
 fi
 echo ""

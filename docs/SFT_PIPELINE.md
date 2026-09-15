@@ -415,6 +415,14 @@ bash scripts/download_base_models.sh --dry-run
 `-Source hf` 路径额外套了**外层重试循环**（默认 6 次，`HF_HUB_DISABLE_XET=1`、`--max-workers 2`）——
 单次 TLS 抖动不再毁掉整个任务。
 
+> ⚠️ **脚本内所有「MSYS 路径 → 原生 .exe」的传参都已规避**：git-bash 下 `$MODEL_DIR` 是
+> `/d/Codings/...` 形式，直接交给原生 `curl.exe` 得到 `curl: (23) Failed to open the file`，
+> 交给原生 `python.exe` 则被 `transformers` 当成 repo id（`HFValidationError: Repo id must be
+> in the form 'repo_name' or 'namespace/repo_name'`）。因此 `curl_get()` / `sha256_at()` /
+> 冒烟测试统一改成**子 shell `cd` 进目标目录 + 裸文件名**（→ `EXPERIMENT_LOG E-24`）。
+> **改动此脚本后必须用绝对 `--model-dir` 复测**——相对路径会把这类 bug 完全盖住
+> （我第一轮"验证通过"就是这么蒙过去的）。
+
 **`[实测]` 已产出产物零返工（哈希证据）**：`models/Qwen3-0.6B/` 下已有的 5 个 tokenizer 文件，
 sha256 与官方清单**逐个一致** ——
 
@@ -431,6 +439,27 @@ sha256 与官方清单**逐个一致** ——
 
 > 另有 `[实测]`：`Qwen3-1.7B` 的 `tokenizer.json` / `tokenizer_config.json` 哈希与 0.6B **完全相同**
 > → teacher 与 student **同词表**，logit 可直接对齐、无需词表映射（只有 `config.json` 不同 `1ddb5b89`，那是结构差异）。
+
+**`[实测]` student 权重已下并校验通过（2026-09-16）**：
+
+`models/Qwen3-0.6B/model.safetensors` = **1,503,300,328 B**，
+sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` —— **与预期逐位一致**。
+走 ModelScope 路径，`curl -C -` 从 607,877,910 B 续传到完整，全程约 4 min（≈5.5 MB/s）。
+脚本冒烟测试输出：
+
+| 项 | 实测值 | 与既有记录 |
+|---|---|---|
+| `vocab_size` | 151936 | 一致 |
+| `hidden_size` | 1024 | 一致 |
+| `num_hidden_layers` | 28 | 一致 |
+| `eos_token_id` | 151645（`<|im_end|>`） | 一致 |
+
+→ `models/Qwen3-0.6B/` 下 **10 个文件已齐**。**teacher（`Qwen3-1.7B`）尚未下载**，
+需要时用 `-Target all` / `--target all`（约 4.06 GB）。
+> `[实测]` ModelScope 下的 `config.json` sha256 = `660db3b73d78…`，与上表 HF 版**逐位一致**
+> → **小文件也是同一份字节**，不只是权重。
+> ⚠️ 但**小文件的 `X-Linked-Etag` 并不是内容 sha256**（0.6B `config.json` 的 etag 是
+> `f5c3703b78ae…`）→ **只对 LFS 权重做哈希校验**才是对的做法，别拿 etag 当 sha256 比。
 
 ---
 
