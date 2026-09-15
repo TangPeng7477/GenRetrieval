@@ -35,7 +35,7 @@
 | **数据** | Amazon 2018 I&S / Office（5-core，纯文本，~10k items）**（已按决策移除）** | **Amazon Reviews 2023** I&S 类目 + 商品图像 → 多模态 |
 | **Item Embedding** | Qwen text2emb（title+description） | Qwen3-Embedding 文本向量 + SigLIP 图像向量 → 门控融合 |
 | **SID 构建** | RQ-VAE / FAISS RQ 3×256 + Sinkhorn | **RQ-VAE 为默认**（RQ-KMeans/FAISS-RQ 作挑战者，三件套 + 端到端择优）+ 融合向量 + 归一化 + **新 SID token embedding 语义初始化** |
-| **基座模型** | Qwen2.5-0.5B-Instruct | **Qwen3-0.6B**（同词表家族，迁移成本低）；teacher 用 Qwen3-1.7B |
+| **基座模型** | Qwen2.5-0.5B-Instruct | **`Qwen3-0.6B-Base`**（同词表家族，迁移成本低；**必须 Base、不用 post-trained** → §5.1.1）；teacher 用 **`Qwen3-1.7B-Base`** |
 | **SFT** | 全参、随机初始化新 token、任务混合 | 语义初始化 + 课程学习 + 任务配比消融；本地 4GB 卡走 QLoRA |
 | **RL** | GRPO + 二值 rule / ndcg ranking / semantic / sasrec | 双路线：**A) 分层奖励设计**；**B) OPD 在线策略蒸馏**（KL-to-teacher 替代 KL-to-ref） |
 
@@ -934,9 +934,9 @@ LazyAR 是**推理侧**优化，与我方 Trie 约束解码互补（我们不存
 
 ## 5. M3/M4：基座模型与 SFT 优化
 
-### 5.1 基座：Qwen2.5-0.5B-Instruct → Qwen3-0.6B
+### 5.1 基座：Qwen2.5-0.5B-Instruct → `Qwen3-0.6B-Base`
 
-| 项 | Qwen2.5-0.5B | Qwen3-0.6B |
+| 项 | Qwen2.5-0.5B-Instruct | `Qwen3-0.6B-Base` |
 |---|---|---|
 | 发布 | 2024-09 | 2025-04 |
 | 词表 | ~151k BPE（同源） | ~151k BPE（同源，新 token 注入流程不变） |
@@ -944,7 +944,53 @@ LazyAR 是**推理侧**优化，与我方 Trie 约束解码互补（我们不存
 | 训练数据 | 18T | 36T |
 | 选择理由 | — | 同家族最小迁移成本；数据质量翻倍；社区 trl/transformers 支持成熟 |
 
-teacher 候选：**Qwen3-1.7B**（OPD 用，见 §6.2；同 tokenizer 保证 logit 对齐，无需处理词表映射）。备选 Qwen3-4B（显存压力大，仅 3090+ 场景）。
+#### 5.1.1 Base 还是 post-trained（**2026-09-16 定案：用 `Qwen/Qwen3-0.6B-Base`**）
+
+Qwen3 同名下有两个权重，此前文档没区分。`[实测]` 逐项核过 tokenizer_config/config：
+
+| 项 | `Qwen3-0.6B`（post-trained） | **`Qwen3-0.6B-Base`（采用）** |
+|---|---|---|
+| 训练阶段 | Pretraining + Post-training | **仅 Pretraining** |
+| thinking | **默认 `enable_thinking=True`**，会输出 `<think>` | 无 |
+| `eos_token` | `<\|im_end\|>` (151645) | **`<\|endoftext\|>` (151643)** |
+| `pad_token` | `<\|endoftext\|>` | `<\|endoftext\|>` |
+| `vocab_size` | 151,936 | 151,936（**相同**） |
+| `hidden_size` / layers | 1024 / 28 | 1024 / 28（**相同**） |
+| `tie_word_embeddings` | True | True |
+| `max_position_embeddings` | 40,960 | 32,768（对 400 的需求无影响） |
+| `chat_template` | `<\|im_start\|>` / `<\|im_end\|>` | 相同 |
+| 权重体积 | 1.5 GB | 1.5 GB |
+
+**三条选择理由**
+
+1. **无 thinking 污染（决定性）**：我们的 target 是**定长 3 个 SID token**。post-trained 若先吐 `<think>`(151667)，
+   在 Trie 约束下没有合法后继 → 被强制 EOS，**生成直接崩**。本节原先写的"统一用 non-thinking 模式"
+   是**在每个入口各自设开关**的打补丁做法；换 Base 从根上消除这个风险。
+2. **SFT 标准起点**：TRL 官方 `SFTTrainer` 文档的示例即 `Qwen/Qwen3-0.6B-Base`。
+3. **产物零返工**（`[实测]`）：vocab / hidden / layers / tie 与 post-trained 完全一致
+   → 已渲染的 173 万条 prompt、token 长度实测（`SFT_PIPELINE §4`）、`sid_vocab` 768 token **全部直接有效**。
+
+⚠️ **唯一代价：`eos_token` 不同**（151645 → 151643）。必须显式处理，见 `SFT_PIPELINE §4.4`。
+
+**落选候选：`Qwen3.5-0.8B-Base`**（2026-03-02 发布，Apache-2.0）
+
+| 维度 | 事实 | 对本项目的含义 |
+|---|---|---|
+| 多模态 | **原生**（内置 Vision Encoder，early fusion，MRoPE） | 与"多模态召回"定位契合，但见下 |
+| 词表 | **248,320**（≠ 151,936，+63%） | ⚠️ 所有 prompt 的 token 长度实测**必须重跑** |
+| 架构 | Gated DeltaNet(线性) + Gated Attention 混合，3:1 周期 | ⚠️ 工具链要求 transformers **4.57.0.dev0+**（我们锁 4.57.1，属边界）；trl/peft 兼容性未验 |
+| 上下文 / 隐维 | 262,144 / 1024 | 隐维与 Qwen3-0.6B 相同 |
+| VRAM | 1.8GB(bf16) | 本地 4GB 可跑 |
+
+**为什么不进 M3**：我们的任务是「给定 SID 历史 → 生成下一个 SID」，是**纯 token 序列生成**；
+多模态信息已经在 **SID 构建阶段（gate 融合 + RQ-VAE）**消化完毕，基座不需要原生多模态。
+M3 首跑引入它 = 同时改"词表 + 架构 + 工具链"三个变量，与 §5.1 的"一次只改一个变量"纪律冲突。
+
+**什么时候它才值钱**：若 V4 之后要做**把图像直接喂给生成式模型**（而非先融进 SID）——
+那时原生多模态基座就是必要条件。记为 M5 之后的候选，**不在 M3 评估**。
+
+teacher 候选：**Qwen3-1.7B-Base**（OPD 用，见 §6.2；与 student 同为 Base 权重、同 tokenizer，
+保证 logit 对齐且无 thinking 干扰，无需处理词表映射）。备选 Qwen3-4B（显存压力大，仅 3090+ 场景）。
 
 风险：trl GRPOTrainer 对 Qwen3 的兼容性（thinking 模式模板差异）→ 统一用 non-thinking 模式 + 锁版本（transformers==4.51+/trl==0.15+，以实测为准，记录进实验文档）。
 
@@ -996,8 +1042,8 @@ L = L_GRPO(student; 分层奖励)
     + λ · KL(π_student ∥ π_teacher)     # 替代 KL(π_student ∥ π_ref)
 ```
 
-- **teacher**：Qwen3-1.7B，先用 student 同款 SFT 数据训一版（或在 3090 上全参 SFT 一次性产出），之后 RL 阶段冻结；
-- **student**：Qwen3-0.6B；
+- **teacher**：`Qwen3-1.7B-Base`，先用 student 同款 SFT 数据训一版（或在 3090 上全参 SFT 一次性产出），之后 RL 阶段冻结；
+- **student**：`Qwen3-0.6B-Base`；
 - 实现落点：`minionerec_trainer.py`（已自定义 ReReTrainer，加 teacher forward + KL 替换是最小侵入改动）；GRPOConfig 的 `beta` 复用为 λ，`sync_ref_model` 路径改挂 teacher；
 - **成本**：teacher 前向 ≈ 显存 +2× student。4GB 本地卡跑不动在线 OPD → OPD 实验默认在 3090 做；本地卡只做路线 A（teacher-free）；
 - **风险**：teacher 太弱会把 student 拉向 teacher 的局部最优 → λ 用 cosine 退火（先强后弱，后期让奖励主导）；teacher 与 student 容量差 3 倍是甜点区（差太多蒸馏不动，差太少没信息量）。
@@ -1055,7 +1101,7 @@ L = L_GRPO(student; 分层奖励)
 |---|---|---|---|
 | M1 | 数据+多模态编码 | 新数据集 + 融合向量 + 下载/编码脚本 | 互检索 recall@k > 单模态基线 |
 | M2 | SID 优化 | SID + `eval_sid.py` 报告 | 三件套全量指标 ≥ 纯文本 SID |
-| M3 | 基座迁移 + 锚点 | Qwen3-0.6B 全流程跑通 + V0' 锚点数字 | SFT 不塌（NDCG@10 ≥ V0' 预期带内） |
+| M3 | 基座迁移 + 锚点 | `Qwen3-0.6B-Base` 全流程跑通 + V0' 锚点数字 | SFT 不塌（NDCG@10 ≥ V0' 预期带内） |
 | M4 | SFT 消融 | §5.3 矩阵结果 | 语义初始化有显著收益（否则诚实记录无效） |
 | M5 | RL 双路线 | §6.3 R0~R3 对比 | R1/R2 至少一个显著优于 R0 |
 | M6 | 总报告 | 升级前后全表 + 消融 + 踩坑复盘 | 写入 EXPERIMENT_LOG.md + README |
