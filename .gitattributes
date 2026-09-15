@@ -1,0 +1,62 @@
+# ============================================================
+# 换行符策略（跨平台）
+#
+# 背景：本机 core.autocrlf=true。若不显式约束，别人 clone 本仓库到 Linux
+# （上云 3090）时 *.sh 会被检出成 CRLF，执行直接报
+#     /usr/bin/env: 'bash\r': No such file or directory
+#     bash: ./xxx.sh: /bin/bash^M: bad interpreter
+#
+# 因此：仓库内文本一律存 LF；只有 Windows 专用脚本在检出时转 CRLF。
+# 新增脚本请遵守此约定，不要依赖本地 core.autocrlf。
+# ============================================================
+
+* text=auto
+
+# --- shell 脚本：必须 LF（否则 Linux 上无法执行）---
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.zsh           text eol=lf
+
+# --- Windows 专用脚本：CRLF ---
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# --- 文本：LF ---
+*.py            text eol=lf
+*.md            text eol=lf
+*.json          text eol=lf
+*.jsonl         text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.toml          text eol=lf
+*.txt           text eol=lf
+*.csv           text eol=lf
+*.inter         text eol=lf
+*.item          text eol=lf
+*.item2id       text eol=lf
+*.svg           text eol=lf
+*.tex           text eol=lf
+*.log           text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# --- 二进制：禁止任何转换 ---
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.npy           binary
+*.npz           binary
+*.pth           binary
+*.pt            binary
+*.ckpt          binary
+*.bin           binary
+*.faiss         binary
+*.safetensors   binary
+*.whl           binary
+*.zip           binary
+*.tar           binary
+*.gz            binary
