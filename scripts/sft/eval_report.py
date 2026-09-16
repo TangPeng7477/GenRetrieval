@@ -65,6 +65,18 @@ def _floats(s: str):
     return [float(x) for x in s.replace(",", " ").split() if x.strip()]
 
 
+def _count_result_json(path: str):
+    """实际评估条数 = result json 的长度。读不到就返回 None（不猜）。"""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return len(json.load(f))
+    except Exception as e:
+        print(f"[WARN] 读 result json 失败: {e}", file=sys.stderr)
+        return None
+
+
 def cmd_metrics(a) -> int:
     txt = open(a.log, encoding="utf-8", errors="replace").read()
 
@@ -90,6 +102,7 @@ def cmd_metrics(a) -> int:
         "HR": {k: v for k, v in zip(topk, hr_vals)},
         "NDCG": {k: v for k, v in zip(topk, ndcg_vals)},
         "n_beam": int(m_beam.group(1)) if m_beam else None,
+        "n_evaluated": _count_result_json(a.result_json),
         "n_generated_not_in_item_dict": int(m_cc.group(1)) if m_cc else None,
         "metric_scope": (
             "beam 内排名（calc.py 口径：minID < K）。未生成物品得分 = -inf，"
@@ -132,6 +145,7 @@ def main():
     p2 = sub.add_parser("metrics", help="解析 calc.py 输出 -> metrics.json")
     p2.add_argument("--log", required=True)
     p2.add_argument("--out", required=True)
+    p2.add_argument("--result-json", default="", help="可选：读它统计实际评估条数")
     p2.set_defaults(fn=cmd_metrics)
 
     a = ap.parse_args()

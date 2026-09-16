@@ -571,6 +571,9 @@ SKIP_PROBE=1 bash evaluate_run0.sh   # 跳过口径自检
 # 指标只产出 HR / NDCG（不报告 MRR —— 生成式下 ≈1/beam 是结构常数）
 cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 
+# 5) 汇总到入 git 的结果表（record 每次评估的模型版本 / HR / NDCG / 推理时间）
+./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py   # -> docs/SFT_EVAL_RESULTS.md
+
 # 4b) 不训练也能跑：evaluator 冒烟测试 + 随机下界锚点（IandS 实测 HR@K 全 0）
 EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
   SID_VOCAB_PATH=data/Amazon23/IandS/sft/info/sid_vocab.json \

@@ -137,6 +137,7 @@ echo " Meta / 指标: ${META_JSON}"
 echo "              ${METRICS_JSON}"
 echo "=========================================="
 
+T_EVAL_0="$(date +%s)"
 "${PY}" ./evaluate.py \
   --base_model "${MODEL_PATH}" \
   --info_file "${INFO_FILE}" \
@@ -150,11 +151,18 @@ echo "=========================================="
   --sid_vocab_path "${SID_VOCAB_PATH}" \
   --max_samples "${MAX_SAMPLES}" \
   2>&1 | tee "${EVAL_LOG}"
+T_EVAL_1="$(date +%s)"
+EVAL_SECONDS=$((T_EVAL_1 - T_EVAL_0))
 
 "${PY}" ./calc.py \
   --path "${RESULT_JSON}" \
   --item_path "${INFO_FILE}" \
   2>&1 | tee "${CALC_LOG}"
+T_CALC_1="$(date +%s)"
+CALC_SECONDS=$((T_CALC_1 - T_EVAL_1))
+
+echo ""
+echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SECONDS}s"
 
 # ---------------- 落盘版本元数据 + 指标（不动 calc.py 的口径，只在外层解析） ----------------
 "${PY}" scripts/sft/eval_report.py meta --out "${META_JSON}" \
@@ -173,11 +181,15 @@ echo "=========================================="
   --set "max_samples=${MAX_SAMPLES}" \
   --set "batch_size=${BATCH_SIZE}" \
   --set "result_json=${RESULT_JSON}" \
+  --set "eval_seconds=${EVAL_SECONDS}" \
+  --set "calc_seconds=${CALC_SECONDS}" \
   --set "git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-  --set "started_at=${STARTED_AT}"
+  --set "started_at=${STARTED_AT}" \
+  --set "finished_at=$(date -Iseconds 2>/dev/null || date)"
 
 set +e
-"${PY}" scripts/sft/eval_report.py metrics --log "${CALC_LOG}" --out "${METRICS_JSON}"
+"${PY}" scripts/sft/eval_report.py metrics --log "${CALC_LOG}" --out "${METRICS_JSON}" \
+  --result-json "${RESULT_JSON}"
 METRICS_RC=$?
 set -e
 

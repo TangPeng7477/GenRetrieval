@@ -506,6 +506,44 @@ cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 | **tokenizer 里真有 SID** | `grep '<a_0>' .../tokenizer.json`（**比"目录存在"强得多**）<br>没命中就说明指的不是训练产物；dry-run 请显式给 `SID_VOCAB_PATH=` |
 | 训练/评估口径一致 | 跑 `probe_constrained_decoding.py`（§3.4，`SKIP_PROBE=1` 跳过） |
 
+### 3.7 结果记录：`docs/SFT_EVAL_RESULTS.md`（入 git 的汇总表）
+
+**为什么要它**：`results/` 与 `logs/` 都被 `.gitignore` 忽略 ⟹ **明细不入仓**。
+重装环境、换机器、或隔几周回看，对照就丢了。所以另有一张**入 git 的汇总表**
+（做法与 [baseline/RESULTS.md](../baseline/RESULTS.md) 一致：明细不入仓、汇总自动生成入仓）。
+
+**流程**：
+
+```bash
+# ① 评估：自动落 .json（逐条预测）/ .meta.json（版本+时间+耗时）/ .metrics.json（HR/NDCG）
+bash evaluate_run0.sh
+
+# ② 汇总：扫 results/sft/ -> 重写 docs/SFT_EVAL_RESULTS.md
+./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py
+```
+
+`collect_eval_results.py` 扫描 `results/sft/*/eval_*.{meta,metrics}.json`，按同名主干配对后输出表格。
+
+**每次评估记录什么**：
+
+| 字段 | 来源 | 说明 |
+|---|---|---|
+| EXP_ID | 目录名 | 版本标识（§3.6） |
+| 模型版本 | `meta.base_model` | 指向训练产物目录 |
+| **推理时间** | `meta.started_at` | **这次评估是什么时候跑的**（`YYYY-MM-DD HH:MM`） |
+| 样本 / beam | `metrics.n_evaluated` / `meta.num_beams` | 读 HR@K 前**必须先看 beam**（它是硬上限） |
+| HR@1/5/10/20 | `metrics.HR` | 只列实际算出的 K（`calc.py` 按 beam 宽度裁剪） |
+| NDCG@10 | `metrics.NDCG` | |
+| 耗时 | `meta.eval_seconds` | `evaluate.py` 墙钟时长；括号内是**每样本**值，跨 batch/beam/机器可比 |
+| commit | `meta.git_commit` | 代码版本，保证可追溯 |
+| 备注 | 派生 | 「现场注册(dry-run)」/「非训练产物」/「抽样」等标签 |
+
+⚠️ 表中**不报告 MRR**（生成式下 `≈1/beam` 是结构常数，见 §3.4）。
+🔴 表头已写死两条口径红线：**beam 内排名 ≠ 全库排序**、**`HR@K` 的上限 = beam 宽度**。
+
+> 表是**自动生成**的，别手改 —— 下次跑收集脚本会覆盖。要加字段就改
+> `scripts/sft/collect_eval_results.py`。
+
 ---
 
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
