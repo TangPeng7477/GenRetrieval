@@ -309,7 +309,7 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 
 | 状态 | 文件 |
 |---|---|
-| **✅ M3 在用**（2026-09-16） | `data.py`（三个 SFT Dataset 类）· `sft.py`（**已改 3 处** → [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)）· `LogitProcessor.py`（Trie 约束解码）· `evaluate.py`（已就位，待训练产物） |
+| **✅ M3 在用**（2026-09-16） | `data.py`（三个 SFT Dataset 类；**已改 1 处**，修 train/eval prompt 不一致 → §8.7）· `sft.py`（**已改 5 处** → [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)）· `LogitProcessor.py`（Trie 约束解码，**只在评估端用**）· `evaluate.py`（已就位，待训练产物） |
 | ⏸ 未启用 | `sasrec.py` `rl.py` `minionerec_trainer.py` `SASRecModules_ori.py` `utility.py` `convert_dataset.py` `split.py` `merge.py` `calc.py` `data_test.py` `sinkhorn_demo.py` |
 | ⏸ 上游分支 | `convert_dataset_gpr.py` `sft_gpr.py` `rl_gpr.py` `ts_rec_data.py` `ts_rec_sft.py` `ts_rec_data/` `config/zero2_opt.yaml` |
 | ⏸ 旧数据管线 | `data/amazon18_data_process.py` `data/amazon23_data_process.py` `data/process.py` |
@@ -561,8 +561,9 @@ bash sft_run0.sh                                     # 默认 IandS；DOMAIN=VG 
 TASKS=T1 bash sft_run0.sh                            # 只跑主任务 -> outputs/sft_IandS_T1
 TASKS=T1,T3 bash sft_run0.sh                         # 辅助任务消融（SFT_PIPELINE §3.3）
 
-# 4) 评估
+# 4) 评估（前置检查会自动跑「prompt 一致性 / Trie 形状」自检）
 bash evaluate_run0.sh
+SKIP_PROBE=1 bash evaluate_run0.sh                   # 跳过该自检
 ```
 
 **上游产物 → 训练参数映射**（完整表见 [SFT_PIPELINE §3.2](docs/SFT_PIPELINE.md)）：
@@ -579,6 +580,12 @@ bash evaluate_run0.sh
 | `data/Amazon23/IandS/sft/info/IandS.item_info.txt` | `evaluate.py --info_file` |
 
 🔴 域代号是 **`IandS`**（用于路径），`--category` 要写**全名** `Industrial_and_Scientific` —— 两者别混。
+
+**约束解码只在评估端用**（训练是 teacher forcing：label 由数据给定，不存在自由生成，加了只会污染 loss）。实现 = `LogitProcessor.py` + `evaluate.py:183`，默认 `num_beams=50`；Trie 由 `info/*.item_info.txt`（25,847 条，覆盖全库）现场重建。
+
+`[实测]` Trie 恰为 **5 步** `[256, 98, 1, 1, 1]` —— step3 只放 `\n`、step4 只放 EOS，与训练 target `[a,b,c,\n,EOS]` **逐位对应**（详见 [SFT_PIPELINE §3.4](docs/SFT_PIPELINE.md)）。
+
+> 🔴 **本轮顺带修掉一处上游遗留 bug**：`data.py` 的 `EvalSidDataset` 把输入句式改成了另一句，而三个训练类用的是原句 —— **train/eval prompt 不一致**（共同前缀仅 49 token、长度差 4）。指令部分相同所以模型能部分泛化、**不会崩到 0**，但会静默掉点。已统一，并把该检查接进 `evaluate_run0.sh` 前置流程。
 🔴 `evaluate.py --base_model` 必须指向**训练输出目录**（自带扩展后的 tokenizer = 152437）；
 指回 `models/Qwen3-0.6B` 会让 SID 被切成碎片、Trie 全挂。
 

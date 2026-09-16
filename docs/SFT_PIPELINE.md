@@ -183,7 +183,7 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 「引号」和「尾部 `\n`」两处。报告落 `data/Amazon23/sft_prompts_verify.json`。
 
 ⚠️ 校验里的坑：三个 Dataset 的 `sample>0` 都是**随机采样**（`data.py:94` 的 `df.sample()`、
-`data.py:723` 的 `random.sample`），所以必须用 `ds.data`（采样后）逐行构造对比，
+`data.py:733` 的 `random.sample`），所以必须用 `ds.data`（采样后）逐行构造对比，
 拿自己 jsonl 的前 N 条去对会全错。
 
 **全量长度实测**（`prompts/<fmt>/stats.json`，双域 × 双格式，2026-09-14 全量跑出）：
@@ -281,7 +281,61 @@ TASKS=T1,T3 bash sft_run0.sh      # 双任务        -> outputs/sft_IandS_T1-T3
 
 > **未接线（本仓 `data.py` 无对应类，要用需新写）**：T4 text2sid
 > （`tasks/text2sid.jsonl`，25,847 条）；注释里的 `SFTData`（与 T1 同构）、
-> `TitleHistory2SidSFTDataset`（历史用 title 而非 SID，`data.py:1332`）。
+> `TitleHistory2SidSFTDataset`（历史用 title 而非 SID，`data.py:1337`）。
+
+### 3.4 约束解码：训练端 vs 评估端各需要什么（2026-09-16 实测）
+
+**结论**：**约束束搜索只在评估端需要；训练端不需要，也不该加。**
+
+| 环节 | 用约束解码？ | 实现位置 |
+|---|---|---|
+| 训练（`sft.py`） | ❌ 不用 | 无 —— 只有 `Trainer`（`sft.py:393`），全程没有 `generate` |
+| 评估（`evaluate.py`） | ✅ 用 | `LogitProcessor.py:24 ConstrainedLogitsProcessor`，挂载在 `evaluate.py:183-189`，默认 `num_beams=50` |
+| 零训练基线（`baseline/generative/sid_gr.py`） | ✅ 用，**另一套独立实现** | numpy 逐层 mask `prefix_allow` + 手写 beam（`baseline/generative/sid_gr.py:131-166`） |
+
+**训练端为什么不需要**：SFT 是 teacher forcing —— label 由数据给定，模型不"选" token，
+不存在生成出非法 SID 的机会。约束解码解决的是"**自由生成时如何保证输出合法**"，
+这个问题在训练时根本不存在；硬加只会污染 loss。
+
+> 🔴 **真正必须两边一致的是「prompt 模板 + 目标格式」，不是束搜索本身。**
+> 训练端靠**数据**教约束（target 本身就是合法序列 `[a,b,c,\n,EOS]`），
+> 评估端靠 **Trie** 强制约束。两者必须描述同一件事，否则训练学到的东西在推理时用不上。
+
+`[实测]` 探针 `scripts/sft/probe_constrained_decoding.py`（直接实例化 `data.py` 的真实类，**不复刻模板**）：
+
+```
+A prompt 一致性 : SidSFTDataset vs EvalSidDataset   逐 token 一致（len=85）
+B Trie 形状     : 5 步  [256, 98, 1, 1, 1]
+                    step0  key="### Response:\n"      -> 允许全部 256 个 <a_k>
+                    step1  key="<a_37>"               -> 允许 98 个 <b_k>
+                    step2  key="<a_37><b_32>"         -> 允许 1 个 <c_k>
+                    step3  key="<a_37><b_32><c_60>"   -> 只允许 \n (198)
+                    step4  key="..<c_60>\n"          -> 只允许 EOS (151645)
+C prefix_index  : "### Response:\n" 三种 encode 路径均 = 3 token [14374, 5949, 510]
+```
+
+B 段与训练 target `[<a>,<b>,<c>,\n,EOS]` **逐位对应** —— 这就是 §6.4(2)
+「SID 定长 3 层 → 终止靠 Trie 不靠 EOS」在代码层面的落地证据。
+
+⚠️ `prefix_index=3`（`LogitProcessor.py:41` 硬编码）的前提是 prompt 末尾恰为
+`"### Response:\n"` 且切成 3 个 token —— C 段实测成立。**换基座 / 换 tokenizer 必须重测这条。**
+
+🔴 **本轮抓到的上游遗留 bug（已修）**：`data.py:623-631` 的 `EvalSidDataset.get_history`
+原文把输入句式注释掉、换成了另一句，而三个训练类
+（`:375 SidDataset` / `:416 SidSFTDataset` / `:507 SidSFTDataset_GPR`）用的是原句 ——
+**train/eval prompt 不一致**：
+
+```
+训练端: "The user has interacted with items {history} in chronological order.
+         Can you predict the next possible item that the user may expect?"
+评估端: "Can you predict the next possible item the user may expect,
+         given the following chronological interaction history: {history}"   <- 原版
+```
+
+共同前缀仅 **49** token、总长差 **4**。指令部分（`:425 / :516 / :638`）三处相同，
+所以模型能**部分泛化、不会崩到 0** —— 但会静默掉点，且从指标上很难察觉。已统一回训练端口径。
+
+> 防复发：`evaluate_run0.sh` 前置检查已接入该探针（跳过用 `SKIP_PROBE=1`）。
 
 ---
 
@@ -552,11 +606,13 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 | `sft.py` | `:239` `padding_side` | `"left"` → `"right"` | §4.3（复制粘贴遗留；纯 RoPE 下数学等价） |
 | `sft.py` | `:192` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
 | `sft.py` | `:190` 新增 `--tasks`<br>`:147` `resolve_tasks` | 训练集由 `ConcatDataset` 三路硬拼 → 可选子集。<br>**默认 `T1,T2a,T2b,T3` 全开，Run-0 行为不变** | §3.3；为任务消融铺路，与 §6.5「每项只改一个变量」配套 |
+| `data.py` | `:623-631` `EvalSidDataset.get_history` | 输入句式统一回训练端口径 | `[实测]` §3.4：原版此处与三个训练类**不一致**（共同前缀仅 49 token）→ train/eval prompt 漂移，会静默掉点 |
 | `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:440`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
 
 **刻意没改的**：
-- `data.py` 三个 Dataset 类与提示词模板**一字未动** —— 即 §2.1「全部裸写」定版**尚未落到 `data.py`**，
-  现状仍是 verbatim 带引号版（诚实边界见 §6.4(5)）。
+- `data.py` **三个训练类**的 Dataset 与提示词模板**未动** —— 即 §2.1「全部裸写」定版
+  **尚未落到 `data.py`**，现状仍是 verbatim 带引号版（诚实边界见 §6.4(5)）。
+  ⚠️ 但 `EvalSidDataset` 的输入句式**已改**（见上表与 §3.4）。
 - `sft.py` 的单阶段 concat **默认配比**（T1:T2a:T2b:T3 = 44.5 : 5.5 : 5.5 : 44.5）保持原样 ——
   `--tasks` 默认全开，Run-0 仍是干净锚点；**只有显式传参才会变**。
 
@@ -581,6 +637,16 @@ B 路由 : PASS
    T2  SidItemFeatDataset  目标 = SID    (title2sid 侧)     51,694 条（sid2title + title2sid）
    T3  FusionSeqRecDataset 目标 = TEXT   (title)           208,999 条
 C 规模 : 默认 --tasks=T1,T2a,T2b,T3 合计 469,692 条
+```
+
+**`[实测]` 约束解码链路自检**（`scripts/sft/probe_constrained_decoding.py --domain IandS`）：
+
+```
+A prompt 一致性 : SidSFTDataset vs EvalSidDataset  逐 token 一致（len=85）
+B Trie 形状     : 5 步  [256, 98, 1, 1, 1]
+                    step3 只允许 \n  /  step4 只允许 EOS   <- 与训练 target 逐位对应
+C prefix_index  : "### Response:\n" 三种 encode 路径均 = 3 token
+结果: 全部通过
 ```
 
 > 最后一行解释了一个容易误判的点：T1 的 label **不是 3 个 token**，而是
@@ -748,8 +814,8 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 | 位置 | 现状 | §2.1 定版 |
 |---|---|---|
-| `data.py:738` `SidItemFeatDataset.generate_prompt`（sid2title） | `What is the title of item "{sid}"?` —— **带双引号** | 全部裸写 |
-| `data.py:735`（title2sid） | `Which item has the title: {title}?` —— 无引号 | 全部裸写 ✅ |
+| `data.py:743` `SidItemFeatDataset.generate_prompt`（sid2title，定义在 `:738`） | `What is the title of item "{sid}"?` —— **带双引号** | 全部裸写 |
+| `data.py:740`（title2sid） | `Which item has the title: {title}?` —— 无引号 | 全部裸写 ✅ |
 | `data.py:417` T1 的 `output` | `target_item + "\n"` —— **带尾部 `\n`** | completion 末尾不加 `\n` |
 
 **为什么留着**：Run-0 要**只改「基座」一个变量**（`Qwen2.5-0.5B` → `Qwen3-0.6B`）。
@@ -790,4 +856,5 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 | Qwen3-0.6B 权重 | ✅ | `[实测]` 2026-09-16 已下并校验通过：1,503,300,328 B、sha256 `f47f7117…6874b` **逐位一致**（§4.5）。⚠️ **teacher `Qwen3-1.7B` 仍未下载**（4.06 GB） |
 | SID 词表注册 | ✅ | `[实测]` 已定版 + 落地（§6.4(4) / §4.6）；自检脚本 `scripts/sft/verify_run0_registration.py --domain IandS` 全绿 |
 | 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **469,692** 条；探针 `scripts/sft/probe_task_switch.py` 全绿 |
+| 约束解码链路核验 | ✅ | `[实测]` §3.4：Trie 5 步 `[256,98,1,1,1]` 与训练 target 逐位对应；`prefix_index=3` 前提成立；**顺带修掉上游遗留的 train/eval prompt 不一致**。回归检查已接入 `evaluate_run0.sh` |
 | T4 `text2sid` 训练端接线 | ⏸ | 数据已产（`tasks/text2sid.jsonl` 25,847 条），`data.py` **无对应 Dataset 类**，要用需新写 |

@@ -55,6 +55,23 @@ output_dir="./results/${exp_name_clean}_${DOMAIN}"
 mkdir -p "${output_dir}" ./logs
 result_json="${output_dir}/final_result_${DOMAIN}.json"
 
+# ---------------- 训练/评估口径一致性（回归检查） ----------------
+# 2026-09-16 实测抓到上游遗留 bug：data.py:624 EvalSidDataset 的输入句式与三个训练类
+# 不一致（共同前缀仅 49 token，长度差 4），模型能部分泛化所以不会崩到 0，但必然掉点。
+# 已统一。此检查防复发。跳过用 SKIP_PROBE=1。
+if [ "${SKIP_PROBE:-0}" != "1" ] && [ -d "${PROBE_MODEL_DIR:-models/Qwen3-0.6B}" ]; then
+  echo "[probe] 训练/评估 prompt 一致性 + Trie 形状 ..."
+  if ! "${PY}" scripts/sft/probe_constrained_decoding.py \
+        --domain "${DOMAIN}" --n-rows 20 \
+        --model-dir "${PROBE_MODEL_DIR:-models/Qwen3-0.6B}" \
+        > "./logs/probe_${DOMAIN}.log" 2>&1; then
+    echo "  [FAIL] 约束解码自检未通过 —— 训练/评估口径可能已漂移"
+    echo "         详见 ./logs/probe_${DOMAIN}.log（或临时跳过：SKIP_PROBE=1）"
+    exit 1
+  fi
+  echo "  [OK] 约束解码自检通过（prompt 逐 token 一致 / Trie 5 步）"
+fi
+
 echo "=========================================="
 echo " GenRetrieval Evaluate - Run-0"
 echo "=========================================="

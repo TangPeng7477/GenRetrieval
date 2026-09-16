@@ -620,8 +620,13 @@ class EvalSidDataset(CSVBaseDataset):
         target_item = str(row['item_sid'])
         target_item_sid = row["item_sid"]
         last_history_item_sid = row['history_item_sid'][-1] if row['history_item_sid'] else None
-        return {"input": # f"The user has interacted with items {history} in chronological order. Can you predict the next possible item that the user may expect?",
-                f"Can you predict the next possible item the user may expect, given the following chronological interaction history: {history}",
+        # [本项目修正] 原版这里被改成了 "Can you predict the next possible item the user may
+        # expect, given the following chronological interaction history: {history}"，
+        # 而三个训练类（:375 SidDataset / :416 SidSFTDataset / :507 SidSFTDataset_GPR）
+        # 用的都是下面这句 -> train/eval prompt 不一致，直接损害评估指标。
+        # 实测（scripts/sft/probe_constrained_decoding.py）两者共同前缀仅 49 token、
+        # 长度差 4，指令部分相同所以模型能部分泛化、不会崩到 0。已统一回训练端口径。
+        return {"input": f"The user has interacted with items {history} in chronological order. Can you predict the next possible item that the user may expect?",
                 "output": target_item + '\n',
                 "dedup": target_item_sid == last_history_item_sid}
     
