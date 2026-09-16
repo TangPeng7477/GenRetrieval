@@ -233,6 +233,9 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 （`evaluate.py:74` 只做 `AutoTokenizer.from_pretrained(base_model)`），它依赖
 `sft.py:435` 的 `tokenizer.save_pretrained(output_dir)` —— 即**训练产物自带扩展后的 tokenizer**。
 指回原始基座的话，SID 会被切成碎片（`<a_1>` → 6 个 token），Trie 全挂。这是 MiniOneRec 的既有设计。
+> ✅ 2026-09-16 起 `evaluate.py --sid_vocab_path` 可在**评估端现场注册**，但**只用于 dry-run**
+> （§3.5）；正式评估仍必须指向训练产物 —— `evaluate_run0.sh` 前置检查会用
+> `grep '<a_0>' tokenizer.json` 拦住指错目录的情况（§3.6）。
 
 > ⚠️ **诚实边界（未接线项，不影响 Run-0 可跑）**：`tasks/*.jsonl` 与
 > `prompts/{alpaca,chatml}/*.jsonl` **目前没有消费方**。训练端 T1/T2/T3 的数据由 `data.py`
@@ -350,14 +353,10 @@ B 段与训练 target `[<a>,<b>,<c>,\n,EOS]` **逐位对应** —— 这就是 �
 `[实测]` 用**完全未训练**的 `models/Qwen3-0.6B` 现场注册词表，跑真实 `evaluate.py`：
 
 ```bash
-./.venv/Scripts/python.exe ./evaluate.py \
-  --base_model models/Qwen3-0.6B \
-  --sid_vocab_path data/Amazon23/IandS/sft/info/sid_vocab.json \
-  --info_file data/Amazon23/IandS/sft/info/IandS.item_info.txt \
-  --category Industrial_and_Scientific \
-  --test_data_path data/Amazon23/IandS/sft/test/IandS_5_test.csv \
-  --result_json_data .workbuddy/_trash/dryrun_untrained.json \
-  --batch_size 4 --num_beams 20 --max_new_tokens 16 --max_samples 300
+# 用通用入口（EXP_ID 显式给，因为这里用的是原始基座而不是训练产物）
+EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
+  SID_VOCAB_PATH=data/Amazon23/IandS/sft/info/sid_vocab.json \
+  MAX_SAMPLES=300 NUM_BEAMS=20 bash evaluate_run0.sh
 ```
 
 ```
@@ -405,6 +404,81 @@ beam 前3 = [<a_2><b_33><c_179>, <a_7><b_27><c_95>, <a_7><b_27><c_148>]
 `evaluate_run0.sh` 默认 `--num_beams 50` 比 sid_gr 宽，是留了 headroom。
 
 ⚠️ **MRR 对生成式禁止横向比较**（`EVAL_PROTOCOL §3.4`：MRR ≈ 1/beam 是结构常数）。
+
+### 3.6 实验命名规范：一个 `EXP_ID` 串起训练与评估（2026-09-16）
+
+**动机**：跑消融时最怕"这个 `final_result.json` 到底是谁的结果"。原先
+`evaluate_run0.sh` 用 `basename(MODEL_PATH)` 当结果目录名，而 `MODEL_PATH` 末级恒为
+`final_checkpoint` ⟹ **所有版本的评估结果写进同一个文件、互相覆盖**（本轮已修）。
+
+**规范**：
+
+```
+EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-run0-T1T3 / IandS-S0
+```
+
+| 产物 | 落点 |
+|---|---|
+| 模型权重 | `outputs/<EXP_ID>/final_checkpoint/` |
+| 评估结果 | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json` |
+| **版本元数据** | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json` |
+| **指标（HR / NDCG）** | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json` |
+| 日志 | `logs/<EXP_ID>/` |
+
+- `RUN_TAG` 默认 `run0`，可任意取：`S0` / `S1` / `base-cmp` …
+- 任务集后缀**只在非默认时出现**（默认四路全开不加后缀，Run-0 名字保持干净）
+- `_n<N>` **只在 `MAX_SAMPLES>0` 时出现**，dry-run 结果不会与全量结果混
+- 评估端**自动从 `MODEL_PATH` 反推 `EXP_ID`**，两边命名天然一致，不用手填
+
+**`meta.json` 记什么**（这就是"一眼看出是哪个版本"的答案）：
+
+```json
+{ "exp_id": "IandS-run0",
+  "domain": "IandS",
+  "base_model": "outputs/IandS-run0/final_checkpoint",
+  "base_model_has_sid_token_map": true,
+  "registered_at_eval": false,
+  "n_items": 25847, "num_beams": 50, "max_samples": 0, "max_new_tokens": 16,
+  "git_commit": "c2326a7", "started_at": "2026-09-16T20:27:08+08:00" }
+```
+
+- `base_model_has_sid_token_map` = 训练产物标记（`sft.py:302` 落盘的 `sid_token_map.json`）
+- `registered_at_eval` = 是否走了 dry-run 的现场注册（正常评估应为 `false`）
+
+🔴 元数据**不写进 result json** —— `calc.py` 假设它是 `list[dict]`
+（`json.load` 后直接 `for sample in test_data`），塞元数据会破坏解析。所以落在旁边的
+`.meta.json`；`.metrics.json` 由 `scripts/sft/eval_report.py` 解析 `calc.py` 的 stdout 得到
+—— **不改 calc.py，指标口径保持单一实现**。
+
+**用法**（换版本只动环境变量，不改脚本）：
+
+```bash
+# 训练
+bash sft_run0.sh                     # -> outputs/IandS-run0/            (EXP_ID=IandS-run0)
+TASKS=T1 bash sft_run0.sh            # -> outputs/IandS-run0-T1/
+RUN_TAG=S0 bash sft_run0.sh          # -> outputs/IandS-S0/
+
+# 评估（EXP_ID 自动反推，不用手填）
+bash evaluate_run0.sh                # 读 outputs/IandS-run0/final_checkpoint
+MODEL_PATH=outputs/IandS-run0-T1/final_checkpoint bash evaluate_run0.sh
+EXP_ID=my-exp MODEL_PATH=/abs/path/to/ckpt bash evaluate_run0.sh     # 完全显式
+
+# 只看 HR / NDCG
+cat results/IandS-run0/eval_IandS_beam50.metrics.json
+```
+
+⚠️ **只报告 HR / NDCG，不报告 MRR**：生成式的候选集 = beam 内 SID，
+`MRR ≈ 1/beam` 是结构常数，不携带排序质量信息（`EVAL_PROTOCOL §3.4` 已标 `n/a`）。
+🔴 `--num_beams` 别调小 —— **beam 宽度就是 HR@K 的硬上限**（`beam_ceiling`）。
+
+**评估脚本的健全性检查**（`evaluate_run0.sh` 前置）：
+
+| 检查 | 判据 |
+|---|---|
+| 上游数据齐 | `test/*.csv` + `info/*.item_info.txt` 存在 |
+| 模型目录存在 | 否则提示先 `bash sft_run0.sh` |
+| **tokenizer 里真有 SID** | `grep '<a_0>' .../tokenizer.json`（**比"目录存在"强得多**）<br>没命中就说明指的不是训练产物；dry-run 请显式给 `SID_VOCAB_PATH=` |
+| 训练/评估口径一致 | 跑 `probe_constrained_decoding.py`（§3.4，`SKIP_PROBE=1` 跳过） |
 
 ---
 
@@ -677,6 +751,9 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 | `sft.py` | `:190` 新增 `--tasks`<br>`:147` `resolve_tasks` | 训练集由 `ConcatDataset` 三路硬拼 → 可选子集。<br>**默认 `T1,T2a,T2b,T3` 全开，Run-0 行为不变** | §3.3；为任务消融铺路，与 §6.5「每项只改一个变量」配套 |
 | `data.py` | `:623-631` `EvalSidDataset.get_history` | 输入句式统一回训练端口径 | `[实测]` §3.4：原版此处与三个训练类**不一致**（共同前缀仅 49 token）→ train/eval prompt 漂移，会静默掉点 |
 | `evaluate.py` | `:51` 新增 `--sid_vocab_path`<br>`:52` 新增 `--max_samples` | 现场注册 SID 词表（口径同 `sft.py:241-306`）+ 限制样本数，供 **dry-run / 未训练基座** 用。<br>**两者默认关闭，现有评估行为完全不变** | §3.5：evaluator 冒烟测试 + 随机下界锚点 |
+| `evaluate_run0.sh` | — | 通用化：`EXP_ID` 命名规范 + 自动反推 + SID 健全性检查 | §3.6 —— 修掉「**所有版本结果写同一文件互相覆盖**」（原用 `basename(MODEL_PATH)`，而它恒为 `final_checkpoint`） |
+| `sft_run0.sh` | — | 产物改落 `outputs/<EXP_ID>/`，日志进 `logs/<EXP_ID>/` | §3.6 命名统一 |
+| `scripts/sft/eval_report.py` | — | **新增**：落 `*.meta.json`（版本元数据）与 `*.metrics.json`（HR/NDCG） | 不改 `calc.py` 的口径，只在外层解析其 stdout |
 | `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:440`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
 
 **刻意没改的**：

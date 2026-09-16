@@ -557,22 +557,24 @@ bash scripts/download_base_models.sh --target all    # 需要 teacher 时（4.06
 ./.venv/Scripts/python.exe scripts/sft/verify_run0_registration.py --domain IandS
 
 # 3) 训练（0.6B 需 24GB 卡，本地 4GB 跑不了）
-bash sft_run0.sh                                     # 默认 IandS；DOMAIN=VG 切换
-TASKS=T1 bash sft_run0.sh                            # 只跑主任务 -> outputs/sft_IandS_T1
-TASKS=T1,T3 bash sft_run0.sh                         # 辅助任务消融（SFT_PIPELINE §3.3）
+bash sft_run0.sh                     # 默认 IandS -> outputs/IandS-run0/
+DOMAIN=VG bash sft_run0.sh           # 换域
+TASKS=T1 bash sft_run0.sh            # 只跑主任务 -> outputs/IandS-run0-T1/
+RUN_TAG=S0 bash sft_run0.sh          # 课程学习 S0 -> outputs/IandS-S0/
 
-# 4) 评估（前置检查会自动跑「prompt 一致性 / Trie 形状」自检）
-bash evaluate_run0.sh
-SKIP_PROBE=1 bash evaluate_run0.sh                   # 跳过该自检
+# 4) 评估（EXP_ID 自动反推；前置检查会跑「prompt 一致性 / Trie 形状」自检）
+bash evaluate_run0.sh                # -> results/IandS-run0/eval_IandS_beam50.json
+MODEL_PATH=outputs/IandS-run0-T1/final_checkpoint bash evaluate_run0.sh
+EXP_ID=x MODEL_PATH=/abs/ckpt bash evaluate_run0.sh  # 完全显式
+SKIP_PROBE=1 bash evaluate_run0.sh   # 跳过口径自检
+
+# 指标只产出 HR / NDCG（不报告 MRR —— 生成式下 ≈1/beam 是结构常数）
+cat results/IandS-run0/eval_IandS_beam50.metrics.json
 
 # 4b) 不训练也能跑：evaluator 冒烟测试 + 随机下界锚点（IandS 实测 HR@K 全 0）
-./.venv/Scripts/python.exe ./evaluate.py --base_model models/Qwen3-0.6B \
-  --sid_vocab_path data/Amazon23/IandS/sft/info/sid_vocab.json \
-  --info_file data/Amazon23/IandS/sft/info/IandS.item_info.txt \
-  --category Industrial_and_Scientific \
-  --test_data_path data/Amazon23/IandS/sft/test/IandS_5_test.csv \
-  --result_json_data .workbuddy/_trash/dryrun_untrained.json \
-  --batch_size 4 --num_beams 20 --max_samples 300   # 详见 SFT_PIPELINE §3.5
+EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
+  SID_VOCAB_PATH=data/Amazon23/IandS/sft/info/sid_vocab.json \
+  MAX_SAMPLES=300 NUM_BEAMS=20 bash evaluate_run0.sh   # 详见 SFT_PIPELINE §3.5
 ```
 
 **上游产物 → 训练参数映射**（完整表见 [SFT_PIPELINE §3.2](docs/SFT_PIPELINE.md)）：
@@ -589,6 +591,9 @@ SKIP_PROBE=1 bash evaluate_run0.sh                   # 跳过该自检
 | `data/Amazon23/IandS/sft/info/IandS.item_info.txt` | `evaluate.py --info_file` |
 
 🔴 域代号是 **`IandS`**（用于路径），`--category` 要写**全名** `Industrial_and_Scientific` —— 两者别混。
+
+**实验命名**：一个 `EXP_ID`（`<域>-<RUN_TAG>[-<任务集>]`，例 `IandS-run0`）串起训练产物与评估结果；
+评估端从 `MODEL_PATH` 自动反推，换版本只动环境变量。详见 [SFT_PIPELINE §3.6](docs/SFT_PIPELINE.md)。
 
 **约束解码只在评估端用**（训练是 teacher forcing：label 由数据给定，不存在自由生成，加了只会污染 loss）。实现 = `LogitProcessor.py` + `evaluate.py:206`，默认 `num_beams=50`；Trie 由 `info/*.item_info.txt`（25,847 条，覆盖全库）现场重建。
 
