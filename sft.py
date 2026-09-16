@@ -144,9 +144,30 @@ TASK_REGISTRY = {
 }
 
 
+def parse_csv_list(v):
+    """把「逗号分隔参数」解析成 list[str]。
+
+    🔴 不能直接 `str(v).split(",")` —— 这是实测踩到的真 bug：
+    fire 会把命令行里的 `a,b,c` **解析成 tuple**（`--tasks T1,T2a` 到手是 `('T1','T2a')`）。
+    此时 `str(v)` 是 `"('T1', 'T2a')"`，split(",") 得到 `["('T1'", " 'T2a')"]` 这类脏元素，
+    全部不在 TASK_REGISTRY 里 ⟹ 直接 raise "未知任务"。**默认的 `TASKS=T1,T2a,T2b,T3`
+    就是这么崩的**（训练直到 2026-09-16 才第一次真正启动，之前所有自检都没走到 train()）。
+    所以这里必须同时兼容 str 与可迭代。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [x.strip() for x in v.split(",") if x.strip()]
+    try:
+        return [str(x).strip() for x in v if str(x).strip()]
+    except TypeError:
+        s = str(v).strip()
+        return [s] if s else []
+
+
 def resolve_tasks(tasks):
-    """解析 --tasks 字符串 -> (selected, warns)。抽在 train() 外，便于单测与探针复用。"""
-    selected = [t.strip() for t in str(tasks).split(",") if t.strip()]
+    """解析 --tasks -> (selected, warns)。抽在 train() 外，便于单测与探针复用。"""
+    selected = parse_csv_list(tasks)
     unknown = [t for t in selected if t not in TASK_REGISTRY]
     if unknown:
         raise ValueError(f"未知任务 {unknown}；可选 {list(TASK_REGISTRY)}")
@@ -191,6 +212,18 @@ def train(
                                    # ConcatDataset 行为（Run-0 锚点）。传 "T1" 即单任务消融。
     torch_compile: bool = False,   # [红线] 默认关。Qwen3 + 动态 padding 下 torch.compile 会
                                    # 反复重编译（每次 batch 长度不同）而拖慢甚至 OOM。
+    # ---- LoRA（UPGRADE_PLAN §5.2 双轨：全参 3090 / QLoRA 本地 4GB；§5.3 消融矩阵要用）----
+    use_lora: bool = False,
+    lora_r: int = 32,              # UPGRADE_PLAN §5.2 定的 r=32
+    lora_alpha: int = 64,
+    lora_dropout: float = 0.05,
+    lora_target_modules: str = "q_proj,k_proj,v_proj,o_proj",
+    # eval 与 save 的频率。Trainer 的语义：**< 1 = 占训练总步数的比例；>= 1 = 绝对步数**。
+    # ⚠️ 本地冒烟请给**绝对步数**（如 16 = 每 16 步一次；给成总步数就只 save 一次）——
+    #    因为本机沙箱有 safe-delete 保护，而 Trainer 配了 save_total_limit=1，
+    #    每次保存都要删旧 checkpoint（一次删 60 个文件）会被拦下并中断训练（实测 exit=1）。
+    #    顺带一提：传 1.0 不等于"每 epoch 一次"，它会被当成"每 1 步"。
+    eval_frac: float = 0.05,
 ):
     set_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
@@ -305,6 +338,33 @@ def train(
             json.dump(register_info, f, ensure_ascii=False, indent=1)
         print(f"[SID] token map saved -> {map_path}")
 
+    # ---------------- LoRA 包装 ----------------
+    if use_lora and freeze_LLM:
+        raise ValueError(
+            "use_lora 与 freeze_LLM 互斥：freeze_LLM 会冻结所有参数（含 LoRA 的 A/B 矩阵），"
+            "结果没有任何可训参数。二选一。"
+        )
+    if use_lora:
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        targets = parse_csv_list(lora_target_modules)
+        lora_cfg = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=targets,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+            # 🔴 关键（不是可选项）：SID 是**新增 token**，而 LoRA 只挂在 attention 投影上，
+            #    embed_tokens / lm_head 的**新增行默认不会被训练** ⟹ 768 个 SID token 会永远停在
+            #    随机初始化，模型学不会输出 SID（而 T1 的目标正是它们）。必须显式纳入。
+            #    Qwen3-0.6B tie_word_embeddings=True，两者共享同一权重矩阵，只训一份。
+            modules_to_save=["embed_tokens", "lm_head"],
+        )
+        model = get_peft_model(model, lora_cfg)
+        print(f"[LoRA] r={lora_r} alpha={lora_alpha} dropout={lora_dropout} targets={targets}")
+        model.print_trainable_parameters()
+
     # Freeze LLM parameters if required
     if freeze_LLM:
         print("Freezing LLM parameters, only training new token embeddings")
@@ -389,7 +449,7 @@ def train(
 
     print(hf_train_dataset)
     print(hf_val_dataset)
-    eval_step = 0.05
+    eval_step = eval_frac
     trainer = transformers.Trainer(
         # deepspeed=deepspeed,
         model=model,
@@ -431,7 +491,16 @@ def train(
     trainer.save_model(output_dir)
     
     output_dir = os.path.join(output_dir, "final_checkpoint")
-    trainer.model.save_pretrained(output_dir)
+    if use_lora:
+        # 🔴 必须合并：LoRA 下 `trainer.model` 是 PeftModel，直接 save_pretrained 只会落
+        #    adapter（adapter_config.json + adapter_model.safetensors），而 evaluate.py 是用
+        #    AutoModelForCausalLM.from_pretrained 原样加载的（不做任何 peft 解析）⟹ 会加载失败。
+        #    merge_and_unload 把 LoRA 折进 base 权重，产出与全参路径同构的完整模型。
+        merged = trainer.model.merge_and_unload()
+        merged.save_pretrained(output_dir)
+        print(f"[LoRA] adapter merged -> full weights at {output_dir}")
+    else:
+        trainer.model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
 

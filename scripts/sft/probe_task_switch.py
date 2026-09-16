@@ -79,6 +79,13 @@ def main():
         ("T1,,T2b",       True, 1),   # 空项被忽略 -> ['T1','T2b']；只选 T2b 不选 T2a，应 WARN
         ("T9",            False, 0),
         ("",              False, 0),
+        # 🔴 回归用例（2026-09-16 实测踩到的真 bug）：fire 会把命令行里的 `a,b,c`
+        #    解析成 **tuple**，而原实现用 `str(v).split(",")` -> 得到 ["('T1'", " 'T2a'")
+        #    这种脏元素 -> 全部"未知任务" -> **默认的 TASKS=T1,T2a,T2b,T3 直接崩**。
+        (("T1", "T2a", "T2b", "T3"), True, 0),
+        (("T1",),                    True, 0),
+        (("T1", "T2b"),              True, 1),
+        (None,                       False, 0),
     ]
     bad = 0
     for s, should_pass, want_warns in cases:
@@ -92,7 +99,7 @@ def main():
         if got != should_pass or (got and len(warns) != want_warns):
             flag = "FAIL"
             bad += 1
-        print(f"  [{flag}] tasks={s!r:16s} -> {detail}")
+        print(f"  [{flag}] tasks={repr(s):26s} -> {detail}")
     print(f"  -> {'PASS' if not bad else f'FAIL ({bad})'}")
     if bad:
         return 1

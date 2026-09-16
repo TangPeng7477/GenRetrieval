@@ -38,7 +38,9 @@ if [ "${TASKS}" = "T1,T2a,T2b,T3" ]; then
 else
   TASK_SUFFIX="-$(printf '%s' "${TASKS}" | tr -d ',')"   # T1,T3 -> -T1T3
 fi
-EXP_ID="${EXP_ID:-${DOMAIN}-${RUN_TAG}${TASK_SUFFIX}}"
+LORA_SUFFIX=""
+[ "${USE_LORA:-False}" = "True" ] && LORA_SUFFIX="-lora"   # LoRA 产物与全参分开，不互相覆盖
+EXP_ID="${EXP_ID:-${DOMAIN}-${RUN_TAG}${TASK_SUFFIX}${LORA_SUFFIX}}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/${EXP_ID}}"
 
 BATCH_SIZE="${BATCH_SIZE:-64}"
@@ -49,6 +51,18 @@ CUTOFF_LEN="${CUTOFF_LEN:-320}"    # Run-0 不含 T4 -> 320 够；带 T4 要 400
 SEED="${SEED:-42}"
 SAMPLE="${SAMPLE:--1}"             # -1 = 全量；想先冒烟可设 SAMPLE=5000
 FREEZE_LLM="${FREEZE_LLM:-False}"  # Run-0 全参训练；S0 warmup 才置 True（SFT_PIPELINE §6.4(1)）
+
+# ---- LoRA / 本地迭代（UPGRADE_PLAN §5.2 双轨：全参 3090 / QLoRA 本地 4GB）----
+USE_LORA="${USE_LORA:-False}"      # True 走 LoRA（**与 FREEZE_LLM 互斥**，sft.py 会报错）
+LORA_R="${LORA_R:-32}"             # §5.2 定版 r=32
+LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+LORA_TARGETS="${LORA_TARGETS:-q_proj,k_proj,v_proj,o_proj}"
+# eval / save 频率。Trainer 语义：**< 1 = 占训练总步数的比例；>= 1 = 绝对步数**。
+# ⚠️ 本地冒烟请给绝对步数（= 总步数，这样只 save 一次）—— 本机沙箱有 safe-delete 保护，
+# 而 Trainer 配了 save_total_limit=1，每次保存都要删旧 checkpoint（一次删 60 个文件）
+# 会被拦下并中断训练（实测 exit=1）。注意传 1.0 ≠ 每 epoch 一次，它等于"每 1 步"。
+EVAL_FRAC="${EVAL_FRAC:-0.05}"
 
 # ---------------- 上游产物路径（SFT_PIPELINE §3.2） ----------------
 TRAIN_FILE="${SFT_DIR}/train/${DOMAIN}_5_train.csv"
@@ -110,6 +124,8 @@ echo " Batch       : ${BATCH_SIZE} (micro ${MICRO_BATCH_SIZE}, accum $((BATCH_SI
 echo " Epochs / LR : ${NUM_EPOCHS} / ${LEARNING_RATE}"
 echo " sample      : ${SAMPLE}   (=-1 全量)"
 echo " freeze_LLM  : ${FREEZE_LLM}"
+echo " use_lora    : ${USE_LORA}$([ "${USE_LORA}" = "True" ] && echo "  (r=${LORA_R} targets=${LORA_TARGETS})")"
+echo " eval_frac   : ${EVAL_FRAC}   (本地冒烟请调大，见脚本注释)"
 echo "=========================================="
 
 "${PY}" sft.py \
@@ -131,6 +147,12 @@ echo "=========================================="
   --sid_vocab_path "${SID_VOCAB}" \
   --tasks "${TASKS}" \
   --freeze_LLM "${FREEZE_LLM}" \
+  --use_lora "${USE_LORA}" \
+  --lora_r "${LORA_R}" \
+  --lora_alpha "${LORA_ALPHA}" \
+  --lora_dropout "${LORA_DROPOUT}" \
+  --lora_target_modules "${LORA_TARGETS}" \
+  --eval_frac "${EVAL_FRAC}" \
   2>&1 | tee "./logs/sft/${EXP_ID}/sft.log"
 
 echo ""

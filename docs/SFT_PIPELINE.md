@@ -544,6 +544,66 @@ bash evaluate_run0.sh
 > 表是**自动生成**的，别手改 —— 下次跑收集脚本会覆盖。要加字段就改
 > `scripts/sft/collect_eval_results.py`。
 
+### 3.8 本地冒烟：4GB 卡能不能跑起来（LoRA 双轨 + 实测）
+
+**结论：能。** 全参跑不动（0.6B 全参 + Adam 状态约 24GB），但两条**冒烟路径**都能在本地跑通，
+用来验证"训练链路是否完好"——在烧 3090 之前把问题挡掉。
+
+| 方式 | 实际训练什么 | `[实测]` trainable | 用途 |
+|---|---|---:|---|
+| `FREEZE_LLM=True` | 只训 768 个新 SID token 的 embedding 行（grad mask） | 156M（26.2%） | 最省；它就是 S0 warmup 的配置（§6.4(1)） |
+| `USE_LORA=True` | LoRA 挂 attention 投影 + `embed_tokens`/`lm_head` | 321M（35.0%） | `UPGRADE_PLAN §5.2` 双轨的**本地那一路**；§5.3 消融矩阵要用 |
+
+```bash
+# 冒烟：16 条样本 / 1 epoch / 16 步，约 1.5 分钟（3050Ti 4GB）
+SAMPLE=16 MICRO_BATCH_SIZE=1 BATCH_SIZE=1 NUM_EPOCHS=1 CUTOFF_LEN=192 \
+TASKS=T1 USE_LORA=True EVAL_FRAC=16 OUTPUT_DIR=outputs/_smoke_lora \
+bash sft_run0.sh
+
+# 评估该冒烟产物（可选，验证"训练 -> 评估"闭环）
+EXP_ID=_smoke_lora_eval MODEL_PATH=outputs/_smoke_lora/final_checkpoint \
+  MAX_SAMPLES=20 NUM_BEAMS=5 BATCH_SIZE=4 SKIP_PROBE=1 bash evaluate_run0.sh
+```
+
+`[实测]` LoRA 冒烟（2026-09-16）：
+
+```
+[LoRA] r=32 alpha=64 dropout=0.05 targets=['q_proj','k_proj','v_proj','o_proj']
+trainable params: 321,366,016 || all params: 917,928,960 || trainable%: 35.0099
+loss: 15.34 -> 15.27 -> 14.41 -> 12.84 -> 11.64 -> 10.34 -> 9.93 -> 9.10 -> 8.43 -> 7.57
+      (16 步单调下降，无 OOM，exit=0，耗时 1m41s)
+
+final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
+  tokenizer=152437 / embedding 行=152437 / SID 编码 [151784,151976,152414] 全部对齐
+  ⟹ evaluate.py（不做任何 peft 解析）**可直接加载**
+```
+
+**三个必须知道的实现点**：
+
+1. 🔴 **`modules_to_save=["embed_tokens", "lm_head"]` 不是可选项**。SID 是**新增 token**，
+   而 LoRA 只挂在 attention 投影上 —— 不显式纳入的话，768 个 SID token 的 embedding
+   **会永远停在随机初始化**，模型学不会输出 SID（而 T1 的目标正是它们）。
+   代价：可训参数从 ~9M 涨到 321M（tie_word_embeddings 下二者仍被各存一份）。
+2. 🔴 **训练后必须 `merge_and_unload` 再保存**。LoRA 下 `trainer.model` 是 PeftModel，
+   直接 `save_pretrained` 只落 adapter，而 `evaluate.py` 是用
+   `AutoModelForCausalLM.from_pretrained` 原样加载的 ⟹ 会失败。已在 `sft.py` 保存段处理。
+3. 🔴 **`fire` 会把命令行里的 `a,b,c` 解析成 tuple**（实测 `--tasks T1,T2a` 到手是
+   `('T1','T2a')`）。所以任何"逗号分隔参数"都**不能**用 `str(v).split(",")`
+   —— 那会得到 `["('T1'", " 'T2a')"]` 这种脏元素。已抽 `sft.py parse_csv_list()`
+   统一兼容 str / tuple / list。⚠️ **默认的 `TASKS=T1,T2a,T2b,T3` 原本就是这么崩的**：
+   训练直到 2026-09-16 才第一次真正启动，之前所有自检都没走到 `train()`。
+   回归用例已加进 `scripts/sft/probe_task_switch.py`。
+
+**本地冒烟的两个额外坑（本机沙箱特有，云端没有）**：
+
+- ⚠️ **`EVAL_FRAC` 要给绝对步数**。Trainer 配了 `save_total_limit=1`，每次保存都要删旧
+  checkpoint（一次 60 个文件），而本机有 safe-delete 保护 ⟹ 被拦下并**中断训练**
+  （实测两次 exit=1）。给 `EVAL_FRAC=<总步数>` 让它只 save 一次即可。
+  注意 Trainer 的语义是 **`<1` = 占训练步数的比例、`>=1` = 绝对步数** ——
+  传 `1.0` 等于"每 1 步"，不是"每 epoch"。
+- ⚠️ **每个 checkpoint 1.8–3.1 GB**（`optimizer.pt` 是大头）。跑完记得清理 `outputs/_smoke_*`，
+  否则几次冒烟就是十几 G。
+
 ---
 
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
