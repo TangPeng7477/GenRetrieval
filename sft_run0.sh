@@ -23,7 +23,17 @@ DOMAIN="${DOMAIN:-IandS}"                            # IandS | VG
 CATEGORY="${CATEGORY:-Industrial_and_Scientific}"    # category_dict 的键（要全名，不是域代号）
 BASE_MODEL="${BASE_MODEL:-models/Qwen3-0.6B}"        # post-trained，依据 UPGRADE_PLAN §5.1.1
 SFT_DIR="${SFT_DIR:-data/Amazon23/${DOMAIN}/sft}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/sft_${DOMAIN}_run0}"
+TASKS="${TASKS:-T1,T2a,T2b,T3}"   # 哪几路进训练集。默认全开 = MiniOneRec ConcatDataset 锚点；
+                                  # 单任务消融 e.g. TASKS=T1。T2a/T2b 由同一个类产出，拆不开
+                                  # （sft.py resolve_tasks 会 WARN）。
+# 输出目录默认按 TASKS 区分，避免消融跑覆盖 Run-0 产物
+if [ -z "${OUTPUT_DIR:-}" ]; then
+  if [ "${TASKS}" = "T1,T2a,T2b,T3" ]; then
+    OUTPUT_DIR="outputs/sft_${DOMAIN}_run0"
+  else
+    OUTPUT_DIR="outputs/sft_${DOMAIN}_$(printf '%s' "${TASKS}" | tr ',' '-')"
+  fi
+fi
 
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
@@ -87,6 +97,7 @@ echo " Base model  : ${BASE_MODEL}"
 echo " Output dir  : ${OUTPUT_DIR}"
 echo " SFT dir     : ${SFT_DIR}"
 echo " Train file  : ${TRAIN_FILE}"
+echo " tasks       : ${TASKS}"
 echo " cutoff_len  : ${CUTOFF_LEN}"
 echo " Batch       : ${BATCH_SIZE} (micro ${MICRO_BATCH_SIZE}, accum $((BATCH_SIZE / MICRO_BATCH_SIZE)))"
 echo " Epochs / LR : ${NUM_EPOCHS} / ${LEARNING_RATE}"
@@ -111,6 +122,7 @@ echo "=========================================="
   --sid_index_path "${SID_INDEX}" \
   --item_meta_path "${ITEM_META}" \
   --sid_vocab_path "${SID_VOCAB}" \
+  --tasks "${TASKS}" \
   --freeze_LLM "${FREEZE_LLM}" \
   2>&1 | tee "./logs/sft_run0_${DOMAIN}.log"
 

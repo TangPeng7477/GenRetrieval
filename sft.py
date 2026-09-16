@@ -133,6 +133,33 @@ def get_cosine_schedule_with_warmup(
 
 
 
+# ---------------- SFT 任务注册表 ----------------
+# [口径] T1 = 主任务（唯一进 EVAL_PROTOCOL 召回指标）；T2a/T2b/T3 = 辅助任务。
+#        默认四个全开 == MiniOneRec 的 ConcatDataset 行为（Run-0 锚点）。
+TASK_REGISTRY = {
+    "T1":  ("SidSFTDataset",       "seq2sid  ", "历史 SID -> 目标 SID"),
+    "T2a": ("SidItemFeatDataset",  "sid2title", "SID      -> title"),
+    "T2b": ("SidItemFeatDataset",  "title2sid", "title    -> SID"),
+    "T3":  ("FusionSeqRecDataset", "seq2title", "历史 SID -> 目标 title"),
+}
+
+
+def resolve_tasks(tasks):
+    """解析 --tasks 字符串 -> (selected, warns)。抽在 train() 外，便于单测与探针复用。"""
+    selected = [t.strip() for t in str(tasks).split(",") if t.strip()]
+    unknown = [t for t in selected if t not in TASK_REGISTRY]
+    if unknown:
+        raise ValueError(f"未知任务 {unknown}；可选 {list(TASK_REGISTRY)}")
+    if not selected:
+        raise ValueError("--tasks 不能为空；可选 " + ",".join(TASK_REGISTRY))
+    warns = []
+    # T2a/T2b 由同一个类同时产出（data.py:711-725 两个循环，各 25,847 条），类外拆不开
+    if ("T2a" in selected) != ("T2b" in selected):
+        warns.append("T2a/T2b 由同一个 SidItemFeatDataset 同时产出，无法只取其一 —— "
+                     "两路都会进训练集。要精确拆分需改 data.py:711-725。")
+    return selected, warns
+
+
 def train(
     # model/data params
     base_model: str = "",  # the only required argument
@@ -160,6 +187,8 @@ def train(
     sid_index_path: str = "",
     item_meta_path: str = "",
     sid_vocab_path: str = "",      # 留空则从 sid_index_path 推导 <sft>/info/sid_vocab.json
+    tasks: str = "T1,T2a,T2b,T3",  # 逗号分隔，选择哪些任务进训练集。默认全开 == MiniOneRec 的
+                                   # ConcatDataset 行为（Run-0 锚点）。传 "T1" 即单任务消融。
     torch_compile: bool = False,   # [红线] 默认关。Qwen3 + 动态 padding 下 torch.compile 会
                                    # 反复重编译（每次 batch 长度不同）而拖慢甚至 OOM。
 ):
@@ -306,19 +335,39 @@ def train(
         print(f"Trainable parameters (with grad-mask): {trainable_params:,} / "
             f"{total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
+    # ---------------- 训练集按任务开关拼装（--tasks） ----------------
+    # 单任务消融传 --tasks T1；辅助任务消融传 --tasks T1,T2a 等。
+    selected, _warns = resolve_tasks(tasks)
+    for _w in _warns:
+        print(f"[WARN] {_w}")
+    print("[TASKS] 任务 -> 数据类映射：")
+    for _t in selected:
+        _cls, _name, _io = TASK_REGISTRY[_t]
+        print(f"        {_t:4s} {_cls:22s} {_name}  {_io}")
+
     train_datasets = []
-    # train_data1 = SFTData(train_file=train_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
-    train_data1 = SidSFTDataset(train_file=train_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
-    train_datasets.append(train_data1)
-    train_data2 = SidItemFeatDataset(item_file=item_meta_path, index_file=sid_index_path, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
-    train_datasets.append(train_data2)
-    train_data3 = FusionSeqRecDataset(train_file=train_file, item_file=item_meta_path, index_file=sid_index_path, tokenizer=tokenizer, max_len=cutoff_len, sample=sample, seed=seed, category=category)
-    train_datasets.append(train_data3)
-    # train_data4 = SFTData(train_file=train_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
-    # train_datasets.append(train_data4)
-    # train_data5 = TitleHistory2SidSFTDataset(train_file=train_file, item_file=item_meta_path, index_file=sid_index_path, tokenizer=tokenizer, max_len=cutoff_len, sample=sample, seed=seed, category=category)
-    # train_datasets.append(train_data5)
-    train_data = ConcatDataset(train_datasets)
+    if "T1" in selected:
+        train_datasets.append(SidSFTDataset(train_file=train_file, tokenizer=tokenizer,
+                                            max_len=cutoff_len, sample=sample, seed=seed, category=category))
+    if "T2a" in selected or "T2b" in selected:
+        train_datasets.append(SidItemFeatDataset(item_file=item_meta_path, index_file=sid_index_path,
+                                                 tokenizer=tokenizer, max_len=cutoff_len, sample=sample,
+                                                 seed=seed, category=category))
+    if "T3" in selected:
+        train_datasets.append(FusionSeqRecDataset(train_file=train_file, item_file=item_meta_path,
+                                                  index_file=sid_index_path, tokenizer=tokenizer,
+                                                  max_len=cutoff_len, sample=sample, seed=seed, category=category))
+    # 未接线（保留 MiniOneRec 原样，需要时再开）：
+    #   SFTData                   -> 与 T1 同构（注释里的 train_data4）
+    #   TitleHistory2SidSFTDataset-> 历史用 title 而非 SID（注释里的 train_data5）
+    #   T4 text2sid（tasks/text2sid.jsonl 25,847 条）本仓 data.py 无对应类，需新写
+
+    for _i, _d in enumerate(train_datasets, start=1):
+        print(f"        {_i}. {type(_d).__name__:22s} {len(_d):>9,} 条")
+    train_data = train_datasets[0] if len(train_datasets) == 1 else ConcatDataset(train_datasets)
+    print(f"[TASKS] 训练集合计 {len(train_data):,} 条")
+
+    # 验证集恒为 T1：评测口径（EvalSidDataset）就是 T1 seq2sid，跟着 --tasks 变会让 val_loss 不可比
     val_data = SidSFTDataset(train_file=eval_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
     # val_data = SFTData(train_file=eval_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=20000, seed=seed, category=category)
     print("LOAD DATA FINISHED")    

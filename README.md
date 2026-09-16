@@ -558,6 +558,8 @@ bash scripts/download_base_models.sh --target all    # 需要 teacher 时（4.06
 
 # 3) 训练（0.6B 需 24GB 卡，本地 4GB 跑不了）
 bash sft_run0.sh                                     # 默认 IandS；DOMAIN=VG 切换
+TASKS=T1 bash sft_run0.sh                            # 只跑主任务 -> outputs/sft_IandS_T1
+TASKS=T1,T3 bash sft_run0.sh                         # 辅助任务消融（SFT_PIPELINE §3.3）
 
 # 4) 评估
 bash evaluate_run0.sh
@@ -572,6 +574,7 @@ bash evaluate_run0.sh
 | `data/Amazon23/IandS/sft/index/IandS.index.json` | `sft.py --sid_index_path` |
 | `data/Amazon23/IandS/sft/index/IandS.item.json` | `sft.py --item_meta_path` |
 | `data/Amazon23/IandS/sft/info/sid_vocab.json` | `sft.py --sid_vocab_path`（**本项目新增**，留空自动推导） |
+| （无对应上游文件） | `sft.py --tasks`（**本项目新增**）：默认四路全开 = 469,692 条，行为等价 MiniOneRec；传子集做任务消融 |
 | `data/Amazon23/IandS/sft/test/IandS_5_test.csv` | `evaluate.py --test_data_path` |
 | `data/Amazon23/IandS/sft/info/IandS.item_info.txt` | `evaluate.py --info_file` |
 

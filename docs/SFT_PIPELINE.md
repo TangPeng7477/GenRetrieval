@@ -20,7 +20,7 @@
 | 样本数 | I&S 209k/51k/51k ／ VG 436k/95k/95k（train/valid/test） | `[实测]` |
 | `cutoff_len` | **400**（只训 T1/T2/T3 时 320 就够；**带 T4 必须 400**，全量 max 392） | `[实测]` §3.1 表 |
 | 上游落点 | `data/Amazon23/<域>/sft/`（域代号 `IandS` / `VG`） | `[实测]` §3.2 |
-| 训练端 | MiniOneRec `sft.py` + `data.py` 为骨架，**本项目已改 3 处**（注册 / `torch_compile` / padding） | `[实测]` §3.2 · §4.6 |
+| 训练端 | MiniOneRec `sft.py` + `data.py` 为骨架，**本项目已改 5 处**（SID 注册 / `--tasks` 开关 / padding / `torch_compile` / `--sid_vocab_path`） | `[实测]` §3.2 · §4.6 |
 | 碰撞（语义桶） | 主榜**严格口径**（每 SID 桶取 1 个 representative），另报宽松上界 | §5.1 |
 
 ---
@@ -67,7 +67,7 @@
 > ⚠️ **不要写成 SIGIR**：LC-Rec 是 **ICDE 2024**（arXiv 2311.09049，GitHub README 的 bibtex 明确
 > `booktitle = ICDE`）。网上不少二手资料误标 SIGIR'24。
 
-**MiniOneRec 的任务组合是 LC-Rec 的子集** `[代码]`（本仓 `sft.py:204-209` 实际 concat 的三个）：
+**MiniOneRec 的任务组合是 LC-Rec 的子集** `[代码]`（本仓 `sft.py:350-357` 实际 concat 的三个）：
 `SidSFTDataset`(T1) + `SidItemFeatDataset`(T2) + `FusionSeqRecDataset`(T3)，**1:1:1 均匀混合**。
 
 ### 1.2 本项目相对 MiniOneRec 的两处改动
@@ -231,14 +231,57 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 
 🔴 **`--base_model` 必须指向训练输出目录**：`evaluate.py` 里**没有任何 `add_tokens`**
 （`evaluate.py:72` 只做 `AutoTokenizer.from_pretrained(base_model)`），它依赖
-`sft.py:386` 的 `tokenizer.save_pretrained(output_dir)` —— 即**训练产物自带扩展后的 tokenizer**。
+`sft.py:435` 的 `tokenizer.save_pretrained(output_dir)` —— 即**训练产物自带扩展后的 tokenizer**。
 指回原始基座的话，SID 会被切成碎片（`<a_1>` → 6 个 token），Trie 全挂。这是 MiniOneRec 的既有设计。
 
 > ⚠️ **诚实边界（未接线项，不影响 Run-0 可跑）**：`tasks/*.jsonl` 与
 > `prompts/{alpaca,chatml}/*.jsonl` **目前没有消费方**。训练端 T1/T2/T3 的数据由 `data.py`
-> 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:313` 的 `SidItemFeatDataset` 用
-> `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:315` 的 `FusionSeqRecDataset` 同）。
+> 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:353` 的 `SidItemFeatDataset` 用
+> `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:357` 的 `FusionSeqRecDataset` 同）。
 > 明文 prompt 渲染产物是给后续「格式消融 / 训练端直读明文」预留的，暂未接线。
+
+### 3.3 分任务训练开关 `--tasks`（2026-09-16 落地）
+
+训练端原本**无条件**把 3 路 Dataset 拼成一份（MiniOneRec 原样）。现改为 `--tasks` 可选，
+**默认 `T1,T2a,T2b,T3` 全开，行为与 MiniOneRec 的 `ConcatDataset` 完全一致** —— Run-0 锚点不变。
+
+`[实测]` 任务 ↔ 数据类 ↔ 规模（IandS，探针 `scripts/sft/probe_task_switch.py`）：
+
+| 键 | 数据类 | 任务 | 输入 → 目标 | 条数 | 占比 |
+|---|---|---|---|---:|---:|
+| `T1` | `SidSFTDataset` | seq2sid | 历史 SID 序列 → 目标 **SID** | 208,999 | 44.5% |
+| `T2a` | `SidItemFeatDataset` | sid2title | SID → title | 25,847 | 5.5% |
+| `T2b` | `SidItemFeatDataset` | title2sid | title → SID | 25,847 | 5.5% |
+| `T3` | `FusionSeqRecDataset` | seq2title | 历史 SID 序列 → 目标 **title 文本** | 208,999 | 44.5% |
+| | | | **合计（默认全开）** | **469,692** | 100% |
+
+> 注意 **T1 与 T3 共用同一份 `train CSV`**（同一条用户序列），只是目标空间不同
+> （SID vs title）—— 这正是 concat 它们的理由：让模型同时学会"SID 序列 ↔ title"两个方向。
+
+用法（输出目录**按任务组合自动加后缀**，消融跑不会覆盖 Run-0 产物）：
+
+```bash
+bash sft_run0.sh                  # 默认四路      -> outputs/sft_IandS_run0
+TASKS=T1 bash sft_run0.sh         # 单任务消融    -> outputs/sft_IandS_T1
+TASKS=T1,T3 bash sft_run0.sh      # 双任务        -> outputs/sft_IandS_T1-T3
+```
+
+🔴 **三条必须知道的限制**：
+
+1. **T2a/T2b 拆不开**：二者由同一个 `SidItemFeatDataset` 在一次构造里同时产出
+   （`data.py:711-725` 两个循环，各 25,847 条）。`selected` 只给一半时 `resolve_tasks`
+   （`sft.py:147`）会打 WARN，**实际两路都会进训练集**。要精确拆分需改 `data.py`。
+2. **验证集恒为 T1**：`val_data` 固定 `SidSFTDataset(valid CSV)`，不随 `--tasks` 变 ——
+   否则 val_loss 跨 run 不可比（评测口径 `EvalSidDataset` 就是 T1）。
+3. 🔴 **只有 T1 进主指标**：`evaluate.py:143` 的 `EvalSidDataset` 只测 seq2sid
+   （Trie 约束生成 3 SID → HR@K / NDCG@K）。所以"分别跑"的价值 =
+   **消融定位每个辅助任务对 T1 主指标的贡献**，而不是分别得到各自的指标；
+   单跑 T2a/T3 训出的模型，也只能拿它去跑 T1 评测看跨任务迁移。
+   → 与 §6.5 执行队列「每项只改一个变量」配套使用。
+
+> **未接线（本仓 `data.py` 无对应类，要用需新写）**：T4 text2sid
+> （`tasks/text2sid.jsonl`，25,847 条）；注释里的 `SFTData`（与 T1 同构）、
+> `TitleHistory2SidSFTDataset`（历史用 title 而非 SID，`data.py:1332`）。
 
 ---
 
@@ -275,7 +318,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 | 项 | V0 | 本项目 | 理由 |
 |---|---|---|---|
 | `cutoff_len` | 512 | **400**（不带 T4 可 320） | `[实测]` 全量：T1 ≤180、T3 ≤277、**T4 ≤392**；512 有 40% 是纯 padding |
-| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:169` **和** `evaluate.py:54` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
+| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:198` **和** `evaluate.py:54` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
 
 > ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
 > 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
@@ -296,7 +339,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 **代价也确实为零**，因为 padding 是动态的（`[实测]`）：
 
 ```
-sft.py:266  DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, padding=True)
+sft.py:422  DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, padding=True)
 → 模拟 batch（120 / 391 / 130 / 200）→ 输出 shape (4, 392)
 ```
 
@@ -367,7 +410,7 @@ right: 短样本 labels = [-100 ×5,  <a_5>, <b_23>, <c_66>, 151645, -100 ×15] 
 |---|---|---|
 | `data.py` completion 末尾 EOS | `tokenizer.eos_token_id` | 自动跟随 |
 | `evaluate.py:89-90` Trie `ID.append(tokenizer.eos_token_id)` | 同上 | 自动跟随 |
-| `sft.py:155-156` `tokenizer.pad_token = tokenizer.eos_token` | 同上 | pad 会跟着变（无影响，pad 位被 -100 屏蔽） |
+| `sft.py:233` `tokenizer.pad_token = tokenizer.eos_token` | 同上 | pad 会跟着变（无影响，pad 位被 -100 屏蔽） |
 
 **推荐做法（TRL 官方口径）**：训练时**把 eos 显式设成与 chat_template 一致的 `<|im_end|>`**。
 TRL `SFTTrainer` 文档原文：
@@ -504,16 +547,18 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 | 文件 | 位置 | 改动 | 理由 / 依据 |
 |---|---|---|---|
 | `sft.py` | `:58` 新增 `SidVocabLoader` | 注册改读 `info/sid_vocab.json`（**码序**），并断言 `index` 的 token ⊆ 码表 | `[实测]` §6.4(4)：`TokenExtender` 的 `sorted()` 使 765/768 个 id 与码序不同 → M4 码本初始化会静默错位 |
-| `sft.py` | `:162` 新增 `--sid_vocab_path` | 留空时从 `--sid_index_path` 自动推导 `<sft>/info/sid_vocab.json` | 少一个必填参数 |
-| `sft.py` | `:273-277` 注册块 | 注册后把 `token→id` 落盘 `output_dir/sid_token_map.json` | 复现 / M4 / 评估端对齐 |
-| `sft.py` | `:210` `padding_side` | `"left"` → `"right"` | §4.3（复制粘贴遗留；纯 RoPE 下数学等价） |
-| `sft.py` | `:371` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
-| `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:391`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
+| `sft.py` | `:189` 新增 `--sid_vocab_path` | 留空时从 `--sid_index_path` 自动推导 `<sft>/info/sid_vocab.json` | 少一个必填参数 |
+| `sft.py` | `:302-306` 注册块 | 注册后把 `token→id` 落盘 `output_dir/sid_token_map.json` | 复现 / M4 / 评估端对齐 |
+| `sft.py` | `:239` `padding_side` | `"left"` → `"right"` | §4.3（复制粘贴遗留；纯 RoPE 下数学等价） |
+| `sft.py` | `:192` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
+| `sft.py` | `:190` 新增 `--tasks`<br>`:147` `resolve_tasks` | 训练集由 `ConcatDataset` 三路硬拼 → 可选子集。<br>**默认 `T1,T2a,T2b,T3` 全开，Run-0 行为不变** | §3.3；为任务消融铺路，与 §6.5「每项只改一个变量」配套 |
+| `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:440`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
 
 **刻意没改的**：
 - `data.py` 三个 Dataset 类与提示词模板**一字未动** —— 即 §2.1「全部裸写」定版**尚未落到 `data.py`**，
   现状仍是 verbatim 带引号版（诚实边界见 §6.4(5)）。
-- `sft.py` 的单阶段 concat 配比（T1:T2:T3）保持原样，Run-0 才有一个干净锚点。
+- `sft.py` 的单阶段 concat **默认配比**（T1:T2a:T2b:T3 = 44.5 : 5.5 : 5.5 : 44.5）保持原样 ——
+  `--tasks` 默认全开，Run-0 仍是干净锚点；**只有显式传参才会变**。
 
 **`[实测]` 注册端到端自检**（`scripts/sft/verify_run0_registration.py --domain IandS`）：
 
@@ -525,6 +570,17 @@ len(tokenizer) = 151669 -> 152437          id range = [151669, 152436]
 '<a_115><b_51><c_233>' -> [151784, 151976, 152414]   (len=3)
 '### Response:\n'      -> [14374, 5949, 510]         (len=3，与 evaluate.py:84 硬编码 prefix_index 一致)
 T1 目标结构 512/512 通过 = [3 个 SID] + [\n, EOS]
+```
+
+**`[实测]` 任务开关路由自检**（`scripts/sft/probe_task_switch.py --domain IandS`）：
+
+```
+A 解析 : PASS   8 个用例（默认 / 单任务 / 双任务 / 非法键 / 空值 / 只给一半 -> WARN）
+B 路由 : PASS
+   T1  SidSFTDataset       目标 = SID    (3-SID 命中 3)    208,999 条
+   T2  SidItemFeatDataset  目标 = SID    (title2sid 侧)     51,694 条（sid2title + title2sid）
+   T3  FusionSeqRecDataset 目标 = TEXT   (title)           208,999 条
+C 规模 : 默认 --tasks=T1,T2a,T2b,T3 合计 469,692 条
 ```
 
 > 最后一行解释了一个容易误判的点：T1 的 label **不是 3 个 token**，而是
@@ -599,7 +655,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 | **S1 主训练** | T1 + T3 + T2 + T4（MiniOneRec 默认比例，见下） | ~80% | 全开 | 5e-4（沿用 V0） | 学序列模式，辅助任务防遗忘 |
 | **S2 退火** | **只 T1** | ~12% | 全开 | 余弦 → 0 | 去掉辅助任务分布干扰，贴合评估口径 |
 
-`[实测]` MiniOneRec `sft.py:202-214` 是 `ConcatDataset([SidSFTDataset, SidItemFeatDataset, FusionSeqRecDataset])`，
+`[实测]` MiniOneRec `sft.py:340-368` 是 `ConcatDataset([SidSFTDataset, SidItemFeatDataset, FusionSeqRecDataset])`，
 单阶段、不分先后。按我们产物算出的**实际配比**：
 
 | 域 | T1 seq2sid | T2（2N，双向） | T3 seq2title | 合计 | T1 : T3 : T2 |
@@ -623,7 +679,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 ### 6.4 `[实测]` 两个必须先知道的实现细节
 
-**(1) `freeze_LLM=True` 已经就是 S0，不用自己写**（`sft.py:173-195`）：
+**(1) `freeze_LLM=True` 已经就是 S0，不用自己写**（`sft.py:309-330`）：
 全参数冻结 → 只解冻 `get_input_embeddings().weight` → **注册 grad hook 把前 `original_vocab_size` 行梯度清零**。
 即：实际只有 768×1024 = 786,432 个参数在动。因为 Qwen3-0.6B 是 `tie_word_embeddings=true`
 （`models/Qwen3-0.6B/config.json`），这个张量同时是 lm_head，所以"只训 embedding"在 tied 下语义正确。
@@ -671,7 +727,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 **(4) `[实测]` 词表注册的 token 来源：不能用 `index/`，要用 `info/sid_vocab.json`**
 
-MiniOneRec 的 `TokenExtender`（`sft.py:42-55`）是**从 `index.json` 现收现加**，且 `sorted()` 排序。
+MiniOneRec 的 `TokenExtender`（`sft.py:30-55`）是**从 `index.json` 现收现加**，且 `sorted()`（`:53`）排序。
 照搬到本项目会同时踩两个坑：
 
 | 坑 | 实测（`scripts/sft/probe_vocab_registration.py`） |
@@ -686,7 +742,7 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 **已定版（2026-09-16）**：注册一律读 `info/sid_vocab.json`（768，**码序**），并断言
 `set(index 的 token) ⊆ set(vocab)`；**只有找不到 vocab 时才回退** MiniOneRec 的 `sorted()` 路径
-（并打 WARN）。已落地 `sft.py:58 SidVocabLoader` + `:214-277` 注册块（推导 / 断言 / 注册 / 落盘），端到端自检见 §4.6。
+（并打 WARN）。已落地 `sft.py:58 SidVocabLoader` + `:241-306` 注册块（推导 / 断言 / 注册 / 落盘），端到端自检见 §4.6。
 
 **(5) 🔴 `data.py` 的提示词仍与 §2.1 定版**漂移**（2026-09-16 发现，**刻意未修**）**
 
@@ -708,12 +764,17 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 | Run | 改什么 | 回答什么问题 |
 |---|---|---|
-| **Run-0 锚点** | 单阶段，原样复刻 MiniOneRec（T1+T2+T3 concat，3 epoch，LR 5e-4，`cutoff_len` 320） | Qwen3-0.6B 相对 V0（Qwen2.5-0.5B, HR@10=0.093）值多少？ |
+| **Run-0 锚点** | 单阶段，原样复刻 MiniOneRec（`--tasks` 默认全开 = T1+T2a+T2b+T3，3 epoch，LR 5e-4，`cutoff_len` 320） | Qwen3-0.6B 相对 V0（Qwen2.5-0.5B, HR@10=0.093）值多少？ |
 | **Run-1** | Run-0 + S0 warmup | warmup 有没有用？ |
 | **Run-2** | Run-1 + S2 退火 | 退火有没有用？ |
 | **Run-3** | 码本语义初始化（`codebook.npy`）替代 S0 | 能不能省掉 warmup？ |
+| **Run-4~6**（辅助任务消融，可选） | 在 Run-0 基线上分别 `TASKS=T1` / `TASKS=T1,T2a` / `TASKS=T1,T3` | 每个辅助任务对 T1 主指标各贡献多少？（§3.3） |
 
 🔴 **Run-0 必须先跑**：一次改基座 + 配比 + 顺序三个变量，出了数字不知道是谁的功劳。
+
+> `--tasks`（§3.3）是这套队列的**执行工具**：Run-0~3 一律用默认全开，只有 Run-4 起的消融才传参；
+> 每组输出目录自动带后缀（`outputs/sft_IandS_T1` 等），互不覆盖。
+> ⚠️ 消融得到的**只有 T1 指标**（辅助任务无独立评测口径），见 §3.3 限制 3。
 
 ---
 
@@ -728,3 +789,5 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 | raw 桶 vs 唯一化的端到端消融 | ⏸ | `sid_sk.npy` 已存档，切口径重跑即可 |
 | Qwen3-0.6B 权重 | ✅ | `[实测]` 2026-09-16 已下并校验通过：1,503,300,328 B、sha256 `f47f7117…6874b` **逐位一致**（§4.5）。⚠️ **teacher `Qwen3-1.7B` 仍未下载**（4.06 GB） |
 | SID 词表注册 | ✅ | `[实测]` 已定版 + 落地（§6.4(4) / §4.6）；自检脚本 `scripts/sft/verify_run0_registration.py --domain IandS` 全绿 |
+| 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **469,692** 条；探针 `scripts/sft/probe_task_switch.py` 全绿 |
+| T4 `text2sid` 训练端接线 | ⏸ | 数据已产（`tasks/text2sid.jsonl` 25,847 条），`data.py` **无对应 Dataset 类**，要用需新写 |
