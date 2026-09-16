@@ -606,6 +606,58 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 
 ---
 
+### 3.9 Checkpoint 保存与 eval 节奏（2026-09-16 读源码 + 实测）
+
+**结论：按步数存，不按 epoch 存。** `sft.py:470-476` 里 eval 与 save 全部用 `steps` 策略。
+
+| 参数 | 值 | 说明 |
+|---|---|---|
+| `eval_strategy` / `save_strategy` | `steps` | 按步，不按 epoch |
+| `eval_steps` / `save_steps` | `eval_frac`（**同一个变量**） | 语义见下 |
+| `logging_steps` | 1 | 每步打 `{loss, grad_norm, learning_rate}` |
+| `save_total_limit` | 1 | 运行时会被抬到 2（见「安全网」） |
+| `load_best_model_at_end` | True | 训练结束回滚到最优 ckpt |
+| `metric_for_best_model` | **`'loss'`**（自动默认） | 未传 `compute_metrics` ⟹ 按 `eval_loss` 选优；`greater_is_better=False` |
+| `save_only_model` | False（默认） | ⟹ checkpoint 里含 **`optimizer.pt`**（1.8–3.1 GB/个的成因） |
+| 早停 | `EarlyStoppingCallback(patience=3)` | 盯同一个 `eval_loss` |
+
+**`eval_frac` 的语义（最容易踩）**：Trainer 的规则 = **`< 1` 当比例、`>= 1` 当绝对步数**
+（`trainer_callback.py:157-168` `TrainerState.compute_steps` → `ceil(max_steps × 比例)`）。
+⚠️ **传 `1.0` 不是"每 epoch 一次"，而是"每 1 步"**。
+
+`[实测]` 各场景的实际间隔（用真实 `TrainingArguments` + 真实 `compute_steps` 算，不是手算）：
+
+| 场景 | 样本 | micro | gacc | 更新步/epoch | max_steps | **eval/save 间隔** | 存几次 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 云端默认 `TASKS=all` | 469,692 | 4 | 16 | 7,339 | 22,017 | **1,101** | ~20 |
+| 云端 `TASKS=T1` | 208,999 | 4 | 16 | 3,266 | 9,798 | **490** | ~20 |
+| 云端 `SAMPLE=5000` | 5,000 | 4 | 16 | 79 | 237 | **12** | ~20 |
+| 本地冒烟 `SAMPLE=16` | 16 | 1 | 1 | 16 | 16 | **1** | 16 |
+
+> `max_steps = ceil(epochs × ceil(len_dataloader / grad_accum))`（`trainer.py:5682-5689`）。
+> 本地冒烟那行间隔 = 1，正是实测被 safe-delete 拦下、中断训练的原因（每步存一个 1.8 GB ckpt）。
+
+🔴 **安全网**：`save_total_limit=1` + `load_best_model_at_end=True` 本来会把**最优** ckpt 一起删掉；
+`trainer.py:4405-4413` 检测到这种情况后**自动把上限抬到 2** ⟹ 磁盘上最多留 2 个 checkpoint。
+
+🔴 **落盘有两份**（`sft.py:491-504`，顺序不能反）：
+1. `trainer.save_model(outputs/<EXP_ID>/)` → 根目录一份（含 tokenizer）
+2. 再存 `outputs/<EXP_ID>/final_checkpoint/` → **`evaluate.py` 指的是这里**
+
+⚠️ **LoRA 下根目录那份是 adapter，不是完整模型**：`trainer._save` 把 `PeftModel` 也算进
+`supported_classes`（`trainer.py:4311`）→ 走 `save_pretrained` → 只落 `adapter_config.json` +
+`adapter_model.safetensors`。合并后的完整权重**只在 `final_checkpoint/`**。
+⟹ **`--base_model` 永远指 `final_checkpoint/`。**
+
+⚠️ **每次 eval 跑的是全量验证集**（IandS `valid` = 50,984 条 ⟹ 12,746 个 eval step/次）；
+场景 A 会 eval ~20 次 ⟹ 累计约 25.5 万次前向。嫌慢就**调大 `EVAL_FRAC`**（间隔变大 = 次数变少）。
+
+⚠️ 两者必须协调：`load_best_model_at_end=True` 且 `eval_steps`/`save_steps` 都 `>= 1` 时，
+`save_steps` 必须是 `eval_steps` 的整数倍，否则 `TrainingArguments` 直接抛 `ValueError`
+（`training_args.py:1693-1700`）。本项目两者取**同一个变量**，天然满足。
+
+---
+
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
 
 | 检查项 | IandS | VG | 判定 |
