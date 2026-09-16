@@ -256,6 +256,7 @@ rsync -avP --relative data/Amazon23/VG/sft     user@<云主机>:~/GenRetrieval/ 
 git clone git@github.com:TangPeng7477/GenRetrieval.git && cd GenRetrieval
 bash scripts/setup_env.sh            # 约 2-4 min（torch 2.6.0+cu118 + requirements-core.txt）
 source .venv/bin/activate            # 后面所有命令都要在这个环境里
+python scripts/check_deps.py --strict # 依赖完备性：AST 扫真实 import vs requirements-core.txt
 
 # ── 云端：拉权重（1.5 GB；ModelScope 实测 ~5.5 MB/s，带 sha256 校验 + 冒烟测试）──
 bash scripts/download_base_models.sh          # 幂等，已下过的会 skip
@@ -278,8 +279,14 @@ python scripts/sft/collect_eval_results.py     # -> docs/SFT_EVAL_RESULTS.md
 # rsync -avP user@<云主机>:~/GenRetrieval/results/sft/ ./results/sft/
 ```
 
-**三个容易踩的点**（都已写进脚本，这里先提醒）：
+**四个容易踩的点**（都已写进脚本，这里先提醒）：
 
+- ⚠️ **依赖完整性有工具把关**：`scripts/check_deps.py --strict` 用 AST 扫主干脚本的真实
+  import、与 `requirements-core.txt` 比对（含 `sklearn`→`scikit-learn` 这类别名映射），
+  并区分「真缺」与「已知例外」（`torch` 按 CUDA 单独装、`flash_attn` 有 `try/except`
+  降级到 `sdpa`）。历史上 **`fire` 就漏过** —— `fire.Fire(train)` 是 `sft.py` 的入口，
+  漏装会在启动瞬间 `ModuleNotFoundError`；现已在 `requirements-core.txt:45`。
+  当前实测 **缺 0 个 ✔**。上云前跑一次可提前拦住这类问题。
 - ⚠️ **`sft_run0.sh` 的默认 batch 是给 3090 的**（`BATCH_SIZE=64` / `MICRO_BATCH_SIZE=4`）。
   换小显存卡时**只调 `MICRO_BATCH_SIZE`**（累积步数自动变），别动总 `BATCH_SIZE`。
 - ⚠️ **评估的显存由 `BATCH_SIZE × NUM_BEAMS` 决定**（beam 展开后的序列总数），不是 batch 单独决定。
