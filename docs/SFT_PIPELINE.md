@@ -658,6 +658,58 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 
 ---
 
+### 3.10 本地 4GB 卡能训到什么程度（2026-09-16 实测）
+
+**结论：能跑通、能出可用权重；但全量训练不可行 —— 与云端差 20 倍以上。**
+
+`[实测]` 基准脚本 **`scripts/sft/bench_local_training.py`**（真实权重 + 与 `sft.py` 同款 LoRA +
+真实 `SidSFTDataset` 出 batch，不靠估算器）。
+
+环境：`RTX 3050 Ti Laptop` **4.00 GiB**（运行时 free 3.23 GiB）· `cutoff_len=320` · `micro_batch=1`。
+实测序列长度 `min 90 / p50 100 / p90 180 / max 180` —— **远短于 320 ⟹ `cutoff_len` 对 T1 不构成瓶颈**。
+
+| 优化器 | 峰值显存 | 是否换页 | s/步（batch=1） | T1 全量 3 epoch 外推 |
+|---|---:|:---:|---:|---:|
+| `adamw_torch`（**`sft.py` 现状**） | **4.26 GiB** | ⚠️ **是**（> 4.00） | **1.140** | **198.5 h（8.3 天）** |
+| `adamw_bnb_8bit` | 3.05 GiB | 否 | 0.332 | 57.8 h（2.4 天） |
+| `sgd`（仅诊断，无优化器状态） | 2.44 GiB | 否 | 0.279 | 48.5 h（2.0 天） |
+
+🔴 **关键机制**：峰值 4.26 GiB **超过显卡物理显存 4.00 GiB** —— Windows WDDM 允许超额分配，
+于是**落到共享内存（换页）**，表现为"不 OOM 但奇慢"。把优化器状态拿掉（SGD）峰值降到 2.44 GiB，
+单步 1.140 → 0.279 s ⟹ **4.1 倍差距全在换页，不是算力**。
+（根因是 LoRA 的 `modules_to_save=[embed_tokens, lm_head]` 让可训参数到 321 M，
+AdamW fp32 状态 ≈ 2.57 GiB。）
+
+**eval 是第二个瓶颈**：`sft.py:462` 把 `per_device_eval_batch_size` 绑死在 `micro_batch_size` 上，
+micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval ⟹ **+27.4 h**。
+
+⟹ `[实测]` 合计：AdamW **225.7 h（9.4 天）**；换 8-bit Adam 也要 **85.2 h（3.5 天）**。
+云端 3090（24 GiB / micro=4 / batch=64）是**小时级**。
+
+**本地能做的两件事**：
+
+1. **流程冒烟**（已验证）：`SAMPLE=16 MICRO_BATCH_SIZE=1 BATCH_SIZE=1 NUM_EPOCHS=1 CUTOFF_LEN=192
+   USE_LORA=True EVAL_FRAC=16` → 1m41s / `exit=0`
+2. **小样本真实训练**：`SAMPLE=2000 NUM_EPOCHS=1` → 约 11 min（8-bit Adam）/ 38 min（AdamW）
+
+🔴 **本地跑必须跳过 eval**，否则 82 分钟的 eval 比训练本身还长：
+把 `EVAL_FRAC` 给一个**大于总步数**的值即可（`steps` 策略 + `eval_steps > max_steps` ⟹ 一次都不 eval）。
+安全性已核源码：`trainer.py:2811` 是
+`if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:` ——
+从没 eval 过时 `best_model_checkpoint` 恒为 `None`（`trainer_callback.py:109`），逻辑短路、
+**不报错**，训练照常结束并落 `final_checkpoint/`。
+
+**两个可选改进**（均未实施，按需启用）：
+
+- 把 `optim` 变成参数（`sft.py:469` 现写死 `"adamw_torch"`）→ 本地可切 `adamw_bnb_8bit`，
+  峰值 4.26 → 3.05 GiB，单步 1.140 → 0.332 s
+- 把 `per_device_eval_batch_size` 与 `micro_batch_size` 解耦（`sft.py:462`）→ eval 从 82 min
+  降到 ~10 min 量级（batch 放大 8 倍）
+
+⚠️ 这两项只对本地有意义；**全量训练一律上云**（3090 不受 4 GiB 限制）。
+
+---
+
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
 
 | 检查项 | IandS | VG | 判定 |
