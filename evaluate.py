@@ -48,6 +48,8 @@ def main(
     length_penalty: float=0.0,
     max_new_tokens: int = 256,
     num_beams: int = 50,
+    sid_vocab_path: str = "",   # [本项目新增] 非空则现场注册 SID 词表（dry-run / 未训练基座用）
+    max_samples: int = 0,       # [本项目新增] 0=全部；>0 只随机取 N 条（dry-run 用，显著提速）
 ):
     random.seed(seed)
     set_seed(seed)
@@ -70,7 +72,25 @@ def main(
 
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
-    
+
+    # [本项目新增] 可选：现场注册 SID 词表。口径与 sft.py:241-306 完全一致（读 sid_vocab.json，码序）。
+    # 用途一：未训练基座也能跑通整条评估链路（evaluator 冒烟测试，不用先烧 GPU）。
+    # 用途二：把「评估端词表必须与训练端一致」从"靠人记得指对目录"变成代码保证。
+    # ⚠️ 训练产物自带扩展后的 tokenizer 时，add_tokens 幂等（新增 0 个），resize 也会被跳过。
+    if sid_vocab_path:
+        with open(sid_vocab_path, encoding="utf-8") as _f:
+            _sid_vocab = json.load(_f)
+        _added = tokenizer.add_tokens(_sid_vocab)
+        _emb_rows = model.get_input_embeddings().weight.shape[0]
+        print(f"[SID] 注册 {len(_sid_vocab)} 个 SID token（新增 {_added}）；"
+              f"tokenizer={len(tokenizer)}  模型 embedding 行数={_emb_rows}")
+        if _emb_rows != len(tokenizer):
+            model.resize_token_embeddings(len(tokenizer))
+            print(f"[SID] resize -> {len(tokenizer)}"
+                  f"（⚠️ 新增行是随机初始化 —— 只有未训练的基座才会走到这里）")
+        else:
+            print("[SID] 模型 embedding 已对齐，跳过 resize")
+
     # Create prefixID for semantic IDs (existing functionality)
     if base_model.lower().find("llama") > -1:
         prefixID = [tokenizer(_).input_ids[1:] for _ in info_semantic]
@@ -140,7 +160,10 @@ def main(
     tokenizer.padding_side = "left"
     
     # val_dataset = EvalD3Dataset(train_file=test_data_path, tokenizer=tokenizer, max_len=2560, category=category, test=True, K=K, seed=seed)
-    val_dataset = EvalSidDataset(train_file=test_data_path, tokenizer=tokenizer, max_len=2560, category=category, test=True, K=K, seed=seed)
+    val_dataset = EvalSidDataset(train_file=test_data_path, tokenizer=tokenizer, max_len=2560, category=category, test=True, K=K, seed=seed,
+                                 sample=(max_samples if max_samples > 0 else -1))
+    if max_samples > 0:
+        print(f"[DRY-RUN] 只取 {len(val_dataset)} 条（seed={seed} 随机采样，非前 N 条）")
         
     encodings = [val_dataset[i] for i in range(len(val_dataset))]
     # encodings = [val_dataset[i] for i in indexes]

@@ -564,6 +564,15 @@ TASKS=T1,T3 bash sft_run0.sh                         # 辅助任务消融（SFT_
 # 4) 评估（前置检查会自动跑「prompt 一致性 / Trie 形状」自检）
 bash evaluate_run0.sh
 SKIP_PROBE=1 bash evaluate_run0.sh                   # 跳过该自检
+
+# 4b) 不训练也能跑：evaluator 冒烟测试 + 随机下界锚点（IandS 实测 HR@K 全 0）
+./.venv/Scripts/python.exe ./evaluate.py --base_model models/Qwen3-0.6B \
+  --sid_vocab_path data/Amazon23/IandS/sft/info/sid_vocab.json \
+  --info_file data/Amazon23/IandS/sft/info/IandS.item_info.txt \
+  --category Industrial_and_Scientific \
+  --test_data_path data/Amazon23/IandS/sft/test/IandS_5_test.csv \
+  --result_json_data .workbuddy/_trash/dryrun_untrained.json \
+  --batch_size 4 --num_beams 20 --max_samples 300   # 详见 SFT_PIPELINE §3.5
 ```
 
 **上游产物 → 训练参数映射**（完整表见 [SFT_PIPELINE §3.2](docs/SFT_PIPELINE.md)）：
@@ -581,7 +590,7 @@ SKIP_PROBE=1 bash evaluate_run0.sh                   # 跳过该自检
 
 🔴 域代号是 **`IandS`**（用于路径），`--category` 要写**全名** `Industrial_and_Scientific` —— 两者别混。
 
-**约束解码只在评估端用**（训练是 teacher forcing：label 由数据给定，不存在自由生成，加了只会污染 loss）。实现 = `LogitProcessor.py` + `evaluate.py:183`，默认 `num_beams=50`；Trie 由 `info/*.item_info.txt`（25,847 条，覆盖全库）现场重建。
+**约束解码只在评估端用**（训练是 teacher forcing：label 由数据给定，不存在自由生成，加了只会污染 loss）。实现 = `LogitProcessor.py` + `evaluate.py:206`，默认 `num_beams=50`；Trie 由 `info/*.item_info.txt`（25,847 条，覆盖全库）现场重建。
 
 `[实测]` Trie 恰为 **5 步** `[256, 98, 1, 1, 1]` —— step3 只放 `\n`、step4 只放 EOS，与训练 target `[a,b,c,\n,EOS]` **逐位对应**（详见 [SFT_PIPELINE §3.4](docs/SFT_PIPELINE.md)）。
 

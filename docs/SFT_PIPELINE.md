@@ -230,7 +230,7 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 | `--base_model` | **训练输出目录**（`outputs/sft_IandS/`），**不是** `models/Qwen3-0.6B` | 🔴 见下 |
 
 🔴 **`--base_model` 必须指向训练输出目录**：`evaluate.py` 里**没有任何 `add_tokens`**
-（`evaluate.py:72` 只做 `AutoTokenizer.from_pretrained(base_model)`），它依赖
+（`evaluate.py:74` 只做 `AutoTokenizer.from_pretrained(base_model)`），它依赖
 `sft.py:435` 的 `tokenizer.save_pretrained(output_dir)` —— 即**训练产物自带扩展后的 tokenizer**。
 指回原始基座的话，SID 会被切成碎片（`<a_1>` → 6 个 token），Trie 全挂。这是 MiniOneRec 的既有设计。
 
@@ -273,7 +273,7 @@ TASKS=T1,T3 bash sft_run0.sh      # 双任务        -> outputs/sft_IandS_T1-T3
    （`sft.py:147`）会打 WARN，**实际两路都会进训练集**。要精确拆分需改 `data.py`。
 2. **验证集恒为 T1**：`val_data` 固定 `SidSFTDataset(valid CSV)`，不随 `--tasks` 变 ——
    否则 val_loss 跨 run 不可比（评测口径 `EvalSidDataset` 就是 T1）。
-3. 🔴 **只有 T1 进主指标**：`evaluate.py:143` 的 `EvalSidDataset` 只测 seq2sid
+3. 🔴 **只有 T1 进主指标**：`evaluate.py:163` 的 `EvalSidDataset` 只测 seq2sid
    （Trie 约束生成 3 SID → HR@K / NDCG@K）。所以"分别跑"的价值 =
    **消融定位每个辅助任务对 T1 主指标的贡献**，而不是分别得到各自的指标；
    单跑 T2a/T3 训出的模型，也只能拿它去跑 T1 评测看跨任务迁移。
@@ -290,7 +290,7 @@ TASKS=T1,T3 bash sft_run0.sh      # 双任务        -> outputs/sft_IandS_T1-T3
 | 环节 | 用约束解码？ | 实现位置 |
 |---|---|---|
 | 训练（`sft.py`） | ❌ 不用 | 无 —— 只有 `Trainer`（`sft.py:393`），全程没有 `generate` |
-| 评估（`evaluate.py`） | ✅ 用 | `LogitProcessor.py:24 ConstrainedLogitsProcessor`，挂载在 `evaluate.py:183-189`，默认 `num_beams=50` |
+| 评估（`evaluate.py`） | ✅ 用 | `LogitProcessor.py:24 ConstrainedLogitsProcessor`，挂载在 `evaluate.py:206-212`，默认 `num_beams=50` |
 | 零训练基线（`baseline/generative/sid_gr.py`） | ✅ 用，**另一套独立实现** | numpy 逐层 mask `prefix_allow` + 手写 beam（`baseline/generative/sid_gr.py:131-166`） |
 
 **训练端为什么不需要**：SFT 是 teacher forcing —— label 由数据给定，模型不"选" token，
@@ -337,6 +337,75 @@ B 段与训练 target `[<a>,<b>,<c>,\n,EOS]` **逐位对应** —— 这就是 �
 
 > 防复发：`evaluate_run0.sh` 前置检查已接入该探针（跳过用 `SKIP_PROBE=1`）。
 
+### 3.5 不训练也能评测吗？—— 能跑通，但数字没意义（2026-09-16 实测）
+
+**结论分三层**：
+
+| 问题 | 答案 |
+|---|---|
+| 词表 + `evaluate.py` 写对了，不训练能不能跑评测/推理？ | **能** —— 纯工程问题，与训练无关 |
+| 跑出来的指标有意义吗？ | **没有** —— Trie 只保证"**合法**"，不保证"**正确**" |
+| 那这个能力有什么用？ | **evaluator 冒烟测试** + **随机下界锚点** |
+
+`[实测]` 用**完全未训练**的 `models/Qwen3-0.6B` 现场注册词表，跑真实 `evaluate.py`：
+
+```bash
+./.venv/Scripts/python.exe ./evaluate.py \
+  --base_model models/Qwen3-0.6B \
+  --sid_vocab_path data/Amazon23/IandS/sft/info/sid_vocab.json \
+  --info_file data/Amazon23/IandS/sft/info/IandS.item_info.txt \
+  --category Industrial_and_Scientific \
+  --test_data_path data/Amazon23/IandS/sft/test/IandS_5_test.csv \
+  --result_json_data .workbuddy/_trash/dryrun_untrained.json \
+  --batch_size 4 --num_beams 20 --max_new_tokens 16 --max_samples 300
+```
+
+```
+[SID] 注册 768 个 SID token（新增 768）；tokenizer=152437  模型 embedding 行数=151936
+[SID] resize -> 152437（⚠️ 新增行是随机初始化 —— 只有未训练的基座才会走到这里）
+[DRY-RUN] 只取 300 条（seed=42 随机采样）
+75/75 [10:14]              <- 300 条 / batch=4 / beam=20，在 3050Ti 上约 10 分钟
+
+calc.py:
+  NDCG: [0. 0. 0. 0. 0.]
+  HR  : [0. 0. 0. 0. 0.]   <- K = 1/3/5/10/20 全 0
+  CC  : 0                  <- 生成但不属于 item_dict 的 SID 数 = 0
+```
+
+**两个读法**：
+
+1. **`CC = 0` 是正面结论**：768 个新增 token 注册正确、Trie 每步掩码正确、
+   `batch_decode(skip_special_tokens=True)` 没把 SID 抹掉、SID → 物品可映射 ——
+   **整条评估链路正确**。这一步不依赖训练，所以可以（也应该）在烧 GPU 前做。
+2. **`HR = 0` 是预期结果**：随机命中率 = `20/25847 = 0.077%`/条，300 条期望命中 **0.23** 次，
+   实测 0 次完全落在随机区间内。
+
+生成样例（未训练模型；样本目标 `<a_19><b_139><c_135>`）：
+
+```
+beam[0]  = <a_2><b_33><c_179>     未命中
+beam 前3 = [<a_2><b_33><c_179>, <a_7><b_27><c_95>, <a_7><b_27><c_148>]
+```
+
+可见 beam 内部有明显前缀偏好（`<a_7><b_27>` 连续出现）—— 那是随机初始化 embedding 的偶然偏置，不含语义。
+
+**随机下界锚点**（同一 test 口径，IandS）：
+
+| 模型 | HR@10 | 来源 |
+|---|---:|---|
+| **未训练 Qwen3-0.6B**（beam=20） | **0.0000** | 本节实测，300 条 |
+| `sid_gr`（零 LLM，但训练了自己的解码器） | 0.0168 | `EVAL_PROTOCOL §3.4` |
+| `sasrec`（全库排序口径） | 0.0395 | `baseline/RESULTS.md` |
+
+⟹ **0.0000 与 0.0168 之间的差，就是"训练"这件事的量化贡献起点。**
+
+⚠️ **beam 宽度是硬天花板**：生成式的 HR@10 上界 = `beam_ceiling@10`。
+`sid_gr` 在 beam=20 时 `beam_ceiling@20` 才 0.0312（**< sasrec 0.0395**）——
+所以 sasrec 这条达标线**光靠"beam 内排序"打不过**，必须真的提高"能不能生成出来"。
+`evaluate_run0.sh` 默认 `--num_beams 50` 比 sid_gr 宽，是留了 headroom。
+
+⚠️ **MRR 对生成式禁止横向比较**（`EVAL_PROTOCOL §3.4`：MRR ≈ 1/beam 是结构常数）。
+
 ---
 
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
@@ -372,7 +441,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 | 项 | V0 | 本项目 | 理由 |
 |---|---|---|---|
 | `cutoff_len` | 512 | **400**（不带 T4 可 320） | `[实测]` 全量：T1 ≤180、T3 ≤277、**T4 ≤392**；512 有 40% 是纯 padding |
-| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:198` **和** `evaluate.py:54` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
+| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:198` **和** `evaluate.py:56` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
 
 > ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
 > 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
@@ -416,7 +485,7 @@ sft.py:422  DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, padding=True
 | **训练** | **right** | 真实 token 从位置 0 起算，与预训练时的位置分布一致 |
 | **批量生成** | **left**（必须） | decoder-only 每步取 `logits[:, -1, :]`；只有右端对齐时最后一列才是"真实的下一个 token 位置"。right padding 会让模型从 pad 后面接着生成，直接崩 |
 
-MiniOneRec 是把生成端的设置（`evaluate.py:140`）顺手复制到了训练端（`sft.py`）造成的，属于复制粘贴遗留。
+MiniOneRec 是把生成端的设置（`evaluate.py:160`）顺手复制到了训练端（`sft.py`）造成的，属于复制粘贴遗留。
 
 **对 Qwen3-0.6B：left 与 right 数学等价，`[实测]` 三条依据**
 
@@ -463,7 +532,7 @@ right: 短样本 labels = [-100 ×5,  <a_5>, <b_23>, <c_66>, 151645, -100 ×15] 
 | 位置 | 取值方式 | 换 Base 后 |
 |---|---|---|
 | `data.py` completion 末尾 EOS | `tokenizer.eos_token_id` | 自动跟随 |
-| `evaluate.py:89-90` Trie `ID.append(tokenizer.eos_token_id)` | 同上 | 自动跟随 |
+| `evaluate.py:109-110` Trie `ID.append(tokenizer.eos_token_id)` | 同上 | 自动跟随 |
 | `sft.py:233` `tokenizer.pad_token = tokenizer.eos_token` | 同上 | pad 会跟着变（无影响，pad 位被 -100 屏蔽） |
 
 **推荐做法（TRL 官方口径）**：训练时**把 eos 显式设成与 chat_template 一致的 `<|im_end|>`**。
@@ -607,6 +676,7 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 | `sft.py` | `:192` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
 | `sft.py` | `:190` 新增 `--tasks`<br>`:147` `resolve_tasks` | 训练集由 `ConcatDataset` 三路硬拼 → 可选子集。<br>**默认 `T1,T2a,T2b,T3` 全开，Run-0 行为不变** | §3.3；为任务消融铺路，与 §6.5「每项只改一个变量」配套 |
 | `data.py` | `:623-631` `EvalSidDataset.get_history` | 输入句式统一回训练端口径 | `[实测]` §3.4：原版此处与三个训练类**不一致**（共同前缀仅 49 token）→ train/eval prompt 漂移，会静默掉点 |
+| `evaluate.py` | `:51` 新增 `--sid_vocab_path`<br>`:52` 新增 `--max_samples` | 现场注册 SID 词表（口径同 `sft.py:241-306`）+ 限制样本数，供 **dry-run / 未训练基座** 用。<br>**两者默认关闭，现有评估行为完全不变** | §3.5：evaluator 冒烟测试 + 随机下界锚点 |
 | `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:440`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
 
 **刻意没改的**：
@@ -624,7 +694,7 @@ index coverage = used=768 / vocab=768 / missing=0
 len(tokenizer) = 151669 -> 152437          id range = [151669, 152436]
 码序 == id 连续 : True
 '<a_115><b_51><c_233>' -> [151784, 151976, 152414]   (len=3)
-'### Response:\n'      -> [14374, 5949, 510]         (len=3，与 evaluate.py:84 硬编码 prefix_index 一致)
+'### Response:\n'      -> [14374, 5949, 510]         (len=3，与 evaluate.py:104 硬编码 prefix_index 一致)
 T1 目标结构 512/512 通过 = [3 个 SID] + [\n, EOS]
 ```
 
