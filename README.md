@@ -236,6 +236,63 @@ LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
 | GPU | RTX 3090 24GB | RTX 3050 Ti 4GB |
 | Python / CUDA | 3.11 / 11.8 | 3.11 / 11.8 |
 
+### 4.1 上云启动 SFT 训练（最短路径）
+
+🔴 **先搞清什么必须带上云** —— SFT 数据与模型权重**都不在 git 里**（`.gitignore` 明确排除）：
+
+| 内容 | 体积 | 入 git？ | 上云方式 |
+|---|---:|:---:|---|
+| `data/Amazon23/<域>/sft/` | 1.4 GB | ❌ | **必须上传**（或在云端按 §4.2 重建） |
+| `models/Qwen3-0.6B` | 1.5 GB | ❌ | **不用上传** —— 云端用脚本从 ModelScope 拉，比传更快 |
+| `results/sid_e5000/` | 0.9 GB | ❌ | 只有要在云端**重建 SFT 数据**时才需要；直接训练不需要 |
+| 代码 / 文档 / 脚本 | 很小 | ✅ | `git clone` 即可 |
+
+```bash
+# ── 本地：把 SFT 数据推上去（约 1.4 GB / 域；--relative 会保留目录结构）──
+rsync -avP --relative data/Amazon23/IandS/sft  user@<云主机>:~/GenRetrieval/
+rsync -avP --relative data/Amazon23/VG/sft     user@<云主机>:~/GenRetrieval/   # 多域
+
+# ── 云端：克隆代码 + 建环境 ──────────────────────────────────────────
+git clone git@github.com:TangPeng7477/GenRetrieval.git && cd GenRetrieval
+bash scripts/setup_env.sh            # 约 2-4 min（torch 2.6.0+cu118 + requirements-core.txt）
+source .venv/bin/activate            # 后面所有命令都要在这个环境里
+
+# ── 云端：拉权重（1.5 GB；ModelScope 实测 ~5.5 MB/s，带 sha256 校验 + 冒烟测试）──
+bash scripts/download_base_models.sh          # 幂等，已下过的会 skip
+# bash scripts/download_base_models.sh --target all   # 连 teacher Qwen3-1.7B（4.06 GB）
+
+# ── 云端：跑前自检（不需要 GPU，约 1 min）────────────────────────────
+python scripts/sft/verify_run0_registration.py --domain IandS    # SID 注册 + 数据端到端
+python scripts/sft/probe_constrained_decoding.py --domain IandS --n-rows 20   # 训练/评估口径一致
+
+# ── 云端：训练 ───────────────────────────────────────────────────────
+bash sft_run0.sh                     # 默认 IandS -> outputs/IandS-run0/
+# TASKS=T1 bash sft_run0.sh          # 任务消融（SFT_PIPELINE §3.3）
+# RUN_TAG=S0 bash sft_run0.sh        # 课程学习 S0
+
+# ── 云端：评估 + 汇总 ────────────────────────────────────────────────
+bash evaluate_run0.sh                # EXP_ID 自动反推 -> results/sft/IandS-run0/
+python scripts/sft/collect_eval_results.py     # -> docs/SFT_EVAL_RESULTS.md
+
+# ── 本地：把结果拉回来（results/ 不入 git，必须手动取）──────────────
+# rsync -avP user@<云主机>:~/GenRetrieval/results/sft/ ./results/sft/
+```
+
+**三个容易踩的点**（都已写进脚本，这里先提醒）：
+
+- ⚠️ **`sft_run0.sh` 的默认 batch 是给 3090 的**（`BATCH_SIZE=64` / `MICRO_BATCH_SIZE=4`）。
+  换小显存卡时**只调 `MICRO_BATCH_SIZE`**（累积步数自动变），别动总 `BATCH_SIZE`。
+- ⚠️ **评估的显存由 `BATCH_SIZE × NUM_BEAMS` 决定**（beam 展开后的序列总数），不是 batch 单独决定。
+  4GB 卡 `batch4 × beam20 = 80` 条可跑、`batch8 × beam50 = 400` 条会 OOM；3090 上不用管。
+- ⚠️ **云端没有 `./.venv/Scripts/python.exe`**（那是 Windows 路径），脚本会自动退回 PATH 里的
+  `python` —— 所以**必须先 `source .venv/bin/activate`**，否则会用到系统 python（缺 numpy）。
+
+> 训练 / 评估的详细参数映射见 **§8.7** 与 [docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md) §3.2；
+> 结果记录规范见 [docs/SFT_EVAL_RESULTS.md](docs/SFT_EVAL_RESULTS.md) 与
+> [docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md) §3.7。
+
+### 4.2 从零重建全流程（SID 阶段；换域 / 换数据时才需要）
+
 ```bash
 # 环境（云平台 / Linux）
 bash scripts/setup_env.sh                      # Windows 用 scripts\setup_env.ps1
@@ -252,10 +309,11 @@ python scripts/data/prepare_amazon23.py --category Video_Games --short VG
 python scripts/multimodal/download_images.py --short VG
 bash scripts/multimodal/encode_all.sh VG
 bash scripts/multimodal/run_vg_sid.sh
-# SFT（上云 3090）：先自检，再训练、评估 —— 详见 §8.7
-./.venv/Scripts/python.exe scripts/sft/verify_run0_registration.py --domain IandS
+# SFT 训练 / 评估 —— 若只想跑 SFT，直接看 §4.1（含数据上传与权重下载的最短路）
+python scripts/sft/verify_run0_registration.py --domain IandS   # 跑前自检（不需 GPU）
 bash sft_run0.sh
 bash evaluate_run0.sh
+python scripts/sft/collect_eval_results.py
 # RL：待 SFT Run-0 跑通后再启动
 ```
 
