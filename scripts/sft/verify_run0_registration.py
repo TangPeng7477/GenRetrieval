@@ -215,20 +215,20 @@ def main():
         seen.add(t)
         r = feats[i]
         lab = [x for x in r["labels"] if x != -100]
-        core = [x for x in lab if x != tok.eos_token_id]
+        sid_in_lab = [x for x in lab if x in sid_ids]
         print(f"  [{t:9s}] in={len(r['input_ids'])} lab={len(lab)} "
-              f"target={tok.decode(lab, skip_special_tokens=False)!r}")
-        if t == "sid2title" and len(core) == 3:
-            print(f"  [FAIL] sid2title 的目标不该是 3 个 SID")
+              f"sid_in_target={len(sid_in_lab)} target={tok.decode(lab, skip_special_tokens=False)!r}")
+        if t == "sid2title" and sid_in_lab:
+            print("  [FAIL] sid2title 的目标不该是 SID")
             return 1
-        if t == "title2sid" and len(core) != 3:
-            print(f"  [FAIL] title2sid 的目标应为 3 个 SID，实得 {len(core)}")
+        if t == "title2sid" and len(sid_in_lab) != 3:
+            print(f"  [FAIL] title2sid 的目标应为 3 个 SID，实得 {len(sid_in_lab)}")
             return 1
 
     # ---------------------------------------------------------------- D
     hr("结论")
     print(f"  A 词表注册        : PASS  ({len(vocab)} tokens, 码序, id {min(ids)}..{max(ids)})")
-    print(f"  B T1 目标         : PASS  ({len(ds)} 条全部 3-token)")
+    print(f"  B T1 目标         : PASS  ({len(ds)} 条结构 = [3 SID] + [\\n, EOS])")
     print(f"  C T2a/T2b         : PASS")
     print()
     return 0
