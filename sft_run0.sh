@@ -30,7 +30,8 @@ RUN_TAG="${RUN_TAG:-run0}"        # 实验标签：run0 / S0 / S1 / base-cmp ...
 
 # ---------------- 实验 ID：一个 EXP_ID 串起训练产物与评估结果 ----------------
 #   EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-run0-T1T3
-#   训练产物  outputs/<EXP_ID>/            评估结果  results/<EXP_ID>/
+#   训练产物  outputs/<EXP_ID>/      评估结果  results/sft/<EXP_ID>/      日志 logs/sft/<EXP_ID>/
+#   （results/ 按阶段分层：SID 阶段在 results/sid*/（rq/*.py 写），SFT 阶段统一在 results/sft/ 下）
 #   （evaluate_run0.sh 会从模型路径自动反推 EXP_ID，两边命名天然一致）
 if [ "${TASKS}" = "T1,T2a,T2b,T3" ]; then
   TASK_SUFFIX=""                                        # 默认全开不加后缀，Run-0 名字保持干净
@@ -92,7 +93,7 @@ if [ ! -f "${BASE_MODEL}/model.safetensors" ] && [ ! -f "${BASE_MODEL}/model.saf
   exit 1
 fi
 
-mkdir -p "${OUTPUT_DIR}" "./logs/${EXP_ID}"
+mkdir -p "${OUTPUT_DIR}" "./logs/sft/${EXP_ID}"
 
 echo "=========================================="
 echo " GenRetrieval SFT  (EXP_ID = ${EXP_ID})"
@@ -130,7 +131,7 @@ echo "=========================================="
   --sid_vocab_path "${SID_VOCAB}" \
   --tasks "${TASKS}" \
   --freeze_LLM "${FREEZE_LLM}" \
-  2>&1 | tee "./logs/${EXP_ID}/sft.log"
+  2>&1 | tee "./logs/sft/${EXP_ID}/sft.log"
 
 echo ""
 echo "训练完成。产物：${OUTPUT_DIR}"

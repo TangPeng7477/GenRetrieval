@@ -563,13 +563,13 @@ TASKS=T1 bash sft_run0.sh            # 只跑主任务 -> outputs/IandS-run0-T1/
 RUN_TAG=S0 bash sft_run0.sh          # 课程学习 S0 -> outputs/IandS-S0/
 
 # 4) 评估（EXP_ID 自动反推；前置检查会跑「prompt 一致性 / Trie 形状」自检）
-bash evaluate_run0.sh                # -> results/IandS-run0/eval_IandS_beam50.json
+bash evaluate_run0.sh                # -> results/sft/IandS-run0/eval_IandS_beam50.json
 MODEL_PATH=outputs/IandS-run0-T1/final_checkpoint bash evaluate_run0.sh
 EXP_ID=x MODEL_PATH=/abs/ckpt bash evaluate_run0.sh  # 完全显式
 SKIP_PROBE=1 bash evaluate_run0.sh   # 跳过口径自检
 
 # 指标只产出 HR / NDCG（不报告 MRR —— 生成式下 ≈1/beam 是结构常数）
-cat results/IandS-run0/eval_IandS_beam50.metrics.json
+cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 
 # 4b) 不训练也能跑：evaluator 冒烟测试 + 随机下界锚点（IandS 实测 HR@K 全 0）
 EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \

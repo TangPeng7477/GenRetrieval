@@ -398,6 +398,27 @@ beam 前3 = [<a_2><b_33><c_179>, <a_7><b_27><c_95>, <a_7><b_27><c_148>]
 
 ⟹ **0.0000 与 0.0168 之间的差，就是"训练"这件事的量化贡献起点。**
 
+> 📁 **该锚点已作为一个正式版本落盘**（`RUN_TAG=untrained`），产物在
+> `results/sft/IandS-untrained/`，与训练后的结果同一套命名、可直接并列比较：
+> ```bash
+> EXP_ID=IandS-untrained MODEL_PATH=models/Qwen3-0.6B \
+>   SID_VOCAB_PATH=data/Amazon23/IandS/sft/info/sid_vocab.json \
+>   MAX_SAMPLES=300 NUM_BEAMS=20 bash evaluate_run0.sh
+> ```
+> 文件名带 `_n300` ⟹ 与将来**全量**（无 `_n` 后缀）的结果天然区分、不会覆盖。
+> `meta.json` 里 `registered_at_eval=true` / `base_model_has_sid_token_map=false`
+> 会如实标记"这是未训练 + 现场注册"，不会与训练产物混淆。
+>
+> ⚠️ **本地跑的显存约束（实测踩坑）**：显存由 **`BATCH_SIZE × NUM_BEAMS`**
+> （beam 展开后的序列总数）决定，**不是 batch 单独决定**。4GB 卡（3050Ti）：
+> `batch4 × beam20 = 80` 条序列 ✓ 跑得动；`batch8 × beam50 = 400` 条 → **CUDA OOM**。
+> 本地想跑就压 **batch**，**别压 beam**（beam 宽度 = HR@K 的硬上限，压它等于自降天花板）。
+> 锚点用 `beam20` 就够 —— 未训练模型的 HR 在所有 K 上恒为 0，与 beam 宽度无关。
+>
+> ⚠️ **别在脚本运行期间改它**：bash 是流式读文件的，编辑到一半被读到会报
+> `syntax error near unexpected token`（本轮实测踩到；事后 `bash -n` 却是通过的，
+> 因为文件最终是完整的 —— 这种"检查不出来"的失败最迷惑人）。要改就等任务结束。
+
 ⚠️ **beam 宽度是硬天花板**：生成式的 HR@10 上界 = `beam_ceiling@10`。
 `sid_gr` 在 beam=20 时 `beam_ceiling@20` 才 0.0312（**< sasrec 0.0395**）——
 所以 sasrec 这条达标线**光靠"beam 内排序"打不过**，必须真的提高"能不能生成出来"。
@@ -420,10 +441,15 @@ EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-run0-T1T3 / I
 | 产物 | 落点 |
 |---|---|
 | 模型权重 | `outputs/<EXP_ID>/final_checkpoint/` |
-| 评估结果 | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json` |
-| **版本元数据** | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json` |
-| **指标（HR / NDCG）** | `results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json` |
-| 日志 | `logs/<EXP_ID>/` |
+| 评估结果 | `results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json` |
+| **版本元数据** | `results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json` |
+| **指标（HR / NDCG）** | `results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json` |
+| 日志 | `logs/sft/<EXP_ID>/` |
+
+> 🔴 **`results/` 按阶段分层**：`results/sid/`、`results/sid_e5000/`、
+> `results/alignment_methods/`、`results/fusion_rank.json` 都是 **SID 阶段**的产物
+> （由 `rq/train_rqvae.py`、`rq/build_sid_dual.py`、`scripts/multimodal/*.py` 写）；
+> **SFT 阶段一律收在 `results/sft/` 下**，两者互不混淆。日志同理走 `logs/sft/`。
 
 - `RUN_TAG` 默认 `run0`，可任意取：`S0` / `S1` / `base-cmp` …
 - 任务集后缀**只在非默认时出现**（默认四路全开不加后缀，Run-0 名字保持干净）
@@ -464,7 +490,7 @@ MODEL_PATH=outputs/IandS-run0-T1/final_checkpoint bash evaluate_run0.sh
 EXP_ID=my-exp MODEL_PATH=/abs/path/to/ckpt bash evaluate_run0.sh     # 完全显式
 
 # 只看 HR / NDCG
-cat results/IandS-run0/eval_IandS_beam50.metrics.json
+cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 ```
 
 ⚠️ **只报告 HR / NDCG，不报告 MRR**：生成式的候选集 = beam 内 SID，

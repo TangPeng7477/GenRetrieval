@@ -9,13 +9,15 @@ set -euo pipefail
 #   EXP_ID       实验 ID    （不传则从 MODEL_PATH 自动反推）
 #
 # ---- 命名规范：一个 EXP_ID 串起训练与评估 ----
-#   EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-run0-T1T3
-#   模型      outputs/<EXP_ID>/final_checkpoint/
-#   评估结果  results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json
-#   版本元数据 results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json
-#   指标      results/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json
-#   日志      logs/<EXP_ID>/
-#   ⟹ 光看路径就知道是哪个版本；换 beam / 样本数也不会互相覆盖。
+#   EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-untrained / IandS-run0-T1T3
+#   results/ 按**阶段**分层：SID 阶段的产物在 results/sid*/（rq/*.py 写），
+#   SFT 阶段统一收在 results/sft/ 下，互不混淆。
+#   模型        outputs/<EXP_ID>/final_checkpoint/
+#   评估结果    results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json
+#   版本元数据  results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json
+#   指标        results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json
+#   日志        logs/sft/<EXP_ID>/
+#   ⟹ 光看路径就知道是哪个阶段、哪个版本；换 beam / 样本数也不会互相覆盖。
 #
 # ---- 指标口径（只看 HR / NDCG，不看 MRR）----
 #   HR@K / NDCG@K = **beam 内排名**（calc.py 的 minID < K）。
@@ -44,6 +46,10 @@ fi
 EXP_ID="${EXP_ID:-${DOMAIN}-${RUN_TAG}}"
 MODEL_PATH="${MODEL_PATH:-outputs/${EXP_ID}/final_checkpoint}"
 
+# ⚠️ 显存由 `BATCH_SIZE × NUM_BEAMS`（beam 展开后的序列总数）决定，**不是 batch 单独决定**。
+#    实测 4GB 卡（3050Ti）：batch4 × beam20 = 80 条序列 ✓ 跑得动；
+#    batch8 × beam50 = 400 条 → CUDA OOM（KV cache 爆）。本地想跑就压 batch，**别压 beam**
+#    （beam 宽度 = HR@K 的硬上限，压它等于自降天花板）。
 BATCH_SIZE="${BATCH_SIZE:-8}"
 NUM_BEAMS="${NUM_BEAMS:-50}"            # 生成式 HR@K 的硬上限 = beam 宽度，别调小
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-16}"  # 目标只有 3 SID + \n + EOS，16 足够
@@ -58,8 +64,8 @@ INFO_FILE="${SFT_DIR}/info/${DOMAIN}.item_info.txt"
 SAMPLE_TAG=""
 if [ "${MAX_SAMPLES}" != "0" ]; then SAMPLE_TAG="_n${MAX_SAMPLES}"; fi
 EVAL_TAG="beam${NUM_BEAMS}${SAMPLE_TAG}"
-OUT_DIR="results/${EXP_ID}"
-LOG_DIR="logs/${EXP_ID}"
+OUT_DIR="results/sft/${EXP_ID}"
+LOG_DIR="logs/sft/${EXP_ID}"
 RESULT_JSON="${OUT_DIR}/eval_${DOMAIN}_${EVAL_TAG}.json"
 META_JSON="${OUT_DIR}/eval_${DOMAIN}_${EVAL_TAG}.meta.json"
 METRICS_JSON="${OUT_DIR}/eval_${DOMAIN}_${EVAL_TAG}.metrics.json"
