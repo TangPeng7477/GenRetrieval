@@ -40,6 +40,9 @@ huggingface-hub==0.35.3
 tokenizers==0.22.1
 safetensors==0.6.2
 sentencepiece
+# fire is the CLI entrypoint of sft.py / evaluate.py (`fire.Fire(train)`),
+# so it is a runtime requirement, not an optional extra.
+fire==0.7.1
 
 # --- Scientific stack ---
 # numpy MUST stay < 2: torch 2.6 and pandas 2.2 are built against the 1.x ABI.

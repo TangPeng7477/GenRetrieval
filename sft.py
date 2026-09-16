@@ -55,6 +55,52 @@ class TokenExtender:
         return self.new_tokens
 
 
+class SidVocabLoader:
+    """加载 SID 码表（**码序**），用于 tokenizer 注册。
+
+    与 MiniOneRec `TokenExtender` 的差异是有意为之，两个硬理由：
+
+    1) **顺序**：`TokenExtender` 从 `.index.json` 现收 token 后 `sorted()`，
+       得到的是字典序（`<a_0>, <a_100>, ..., <a_109>, <a_10>...`）。
+       而 `sid_vocab.json` 是**码序**（`<a_0>, <a_1>, ..., <a_255>`）。
+       [实测] 二者在 765/768 个 token 上给出的 id 不同。
+       后果：M4 码本语义初始化按 `codebook.npy` 的行下标对齐（`(3,256,32)`），
+       `<a_k>` 必须落在 `cb[0][k]` —— 用字典序会**静默错位**。
+
+    2) **集合**：`index.json` 只含"被用过"的码。[实测] VG 只有 759 个
+       （缺 9 个 a 层死码，3.52%），IandS 恰好 768。
+       后果：两域词表大小不一致，且无法覆盖码本全部行。
+
+    因此注册以 `sid_vocab.json` 为准，并用 `check_coverage()` 断言
+    `index.json` 用到的 token 一个不漏 —— 漏了就是静默掉码。
+    """
+
+    def __init__(self, vocab_path):
+        self.vocab_path = vocab_path
+        self.tokens = self._load()
+
+    def _load(self):
+        with open(self.vocab_path, 'r', encoding='utf-8') as f:
+            vocab = json.load(f)
+        if not isinstance(vocab, list) or not vocab:
+            raise ValueError(f'sid_vocab.json 应为非空 list: {self.vocab_path}')
+        if len(set(vocab)) != len(vocab):
+            raise ValueError(f'sid_vocab.json 含重复 token: {self.vocab_path}')
+        return vocab
+
+    def check_coverage(self, index_path):
+        """断言 index.json 用到的 token 全部在码表内。
+
+        Returns (used:set, missing:list) —— missing 非空即为致命错。
+        """
+        with open(index_path, 'r', encoding='utf-8') as f:
+            indices = json.load(f)
+        used = set()
+        for sids in indices.values():
+            used.update(sids)
+        return used, sorted(used - set(self.tokens))
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -113,6 +159,9 @@ def train(
     train_from_scratch: bool = False,
     sid_index_path: str = "",
     item_meta_path: str = "",
+    sid_vocab_path: str = "",      # 留空则从 sid_index_path 推导 <sft>/info/sid_vocab.json
+    torch_compile: bool = False,   # [红线] 默认关。Qwen3 + 动态 padding 下 torch.compile 会
+                                   # 反复重编译（每次 batch 长度不同）而拖慢甚至 OOM。
 ):
     set_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
@@ -160,18 +209,72 @@ def train(
     #     但 left 是生成端设置的复制粘贴，换 sliding window / rope_scaling 就会错。
     tokenizer.padding_side = "right"
     new_tokens = []
+    register_info = {}
 
-    if sid_index_path and os.path.exists(sid_index_path):
-        print(f"Loading index from {sid_index_path}")
+    if not sid_vocab_path and sid_index_path:
+        cand = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(sid_index_path))),
+            "info", "sid_vocab.json",
+        )
+        if os.path.exists(cand):
+            sid_vocab_path = cand
+
+    if sid_vocab_path and os.path.exists(sid_vocab_path):
+        loader = SidVocabLoader(sid_vocab_path)
+        new_tokens = loader.tokens
+        print(f"[SID] vocab={len(new_tokens)} (code order) <- {sid_vocab_path}")
+
+        # 覆盖性断言：index.json 用到的 token 必须全在码表内，否则是静默掉码
+        if sid_index_path and os.path.exists(sid_index_path):
+            used, missing = loader.check_coverage(sid_index_path)
+            if missing:
+                raise ValueError(
+                    f"index 用到 {len(used)} 个 token，其中 {len(missing)} 个不在 "
+                    f"sid_vocab.json 内: {missing[:10]}"
+                )
+            print(f"[SID] coverage OK: index uses {len(used)}/{len(new_tokens)} tokens")
+        else:
+            print("[SID] WARN: sid_index_path 缺失，跳过覆盖性断言")
+
+        # 真实落点（[实测] Qwen3-0.6B）：注册前 len(tokenizer)=151669（= config.vocab_size
+        # 151936 - 旧 padding 区 267）。故 SID id 从 151669 起，旧 267 行是"僵尸区"
+        # （从未被 resize 触及、也无预训练语义），可接受。
+        added = tokenizer.add_tokens(new_tokens)
+        model.resize_token_embeddings(len(tokenizer))
+        print(f"[SID] add_tokens +{added} (requested {len(new_tokens)}), "
+              f"len(tokenizer)={len(tokenizer)}")
+        register_info = {
+            "source": sid_vocab_path,
+            "order": "code",
+            "n_tokens": len(new_tokens),
+            "vocab_size_before": original_vocab_size,
+            "vocab_size_after": len(tokenizer),
+            "token_to_id": {t: tokenizer.convert_tokens_to_ids(t) for t in new_tokens},
+        }
+    elif sid_index_path and os.path.exists(sid_index_path):
+        # 兼容 MiniOneRec 原路径 —— 不推荐：字典序会让 M4 码本语义初始化静默错位
+        print("[SID] WARN: 未找到 sid_vocab.json，回退 MiniOneRec TokenExtender(sorted)")
         token_extender = TokenExtender(
             data_path=os.path.dirname(sid_index_path),
             dataset=os.path.basename(sid_index_path).split('.')[0]
         )
         new_tokens = token_extender.get_new_tokens()
         if new_tokens:
-            print(f"Adding {len(new_tokens)} new tokens to tokenizer")
             tokenizer.add_tokens(new_tokens)
             model.resize_token_embeddings(len(tokenizer))
+            register_info = {
+                "source": sid_index_path,
+                "order": "sorted",
+                "n_tokens": len(new_tokens),
+                "vocab_size_before": original_vocab_size,
+                "vocab_size_after": len(tokenizer),
+            }
+
+    if register_info:
+        map_path = os.path.join(output_dir, "sid_token_map.json")
+        with open(map_path, "w", encoding="utf-8") as f:
+            json.dump(register_info, f, ensure_ascii=False, indent=1)
+        print(f"[SID] token map saved -> {map_path}")
 
     # Freeze LLM parameters if required
     if freeze_LLM:
@@ -265,7 +368,7 @@ def train(
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if wandb_project or wandb_run_name else "none",
-            torch_compile=True,
+            torch_compile=torch_compile,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True

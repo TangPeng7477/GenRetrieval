@@ -19,7 +19,8 @@
 | 辅助任务 | T2 `sid↔title` ／ T3 `seq2title` ／ T4 `text2sid`（本项目新增） | §2 |
 | 样本数 | I&S 209k/51k/51k ／ VG 436k/95k/95k（train/valid/test） | `[实测]` |
 | `cutoff_len` | **400**（只训 T1/T2/T3 时 320 就够；**带 T4 必须 400**，全量 max 392） | `[实测]` §3.1 表 |
-| 训练端 | **MiniOneRec `sft.py` + `data.py` 原样可用**，已实跑验证 | `[实测]` §4 ⑤ |
+| 上游落点 | `data/Amazon23/<域>/sft/`（域代号 `IandS` / `VG`） | `[实测]` §3.2 |
+| 训练端 | MiniOneRec `sft.py` + `data.py` 为骨架，**本项目已改 3 处**（注册 / `torch_compile` / padding） | `[实测]` §3.2 · §4.6 |
 | 碰撞（语义桶） | 主榜**严格口径**（每 SID 桶取 1 个 representative），另报宽松上界 | §5.1 |
 
 ---
@@ -207,6 +208,40 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 
 ---
 
+### 3.2 上游产物 → 训练/评估参数映射（跑训练前照这张表填）
+
+域代号是 **`IandS` / `VG`**（**不是** `Industrial_and_Scientific` —— 那个全名只用在 `--category`）。
+下表以 `IandS` 为例，VG 只需把路径里的 `IandS` 换成 `VG`。
+
+| `sft.py` 参数 | 指向上游哪个文件 | IandS `[实测]` 规模 |
+|---|---|---|
+| `--train_file` | `data/Amazon23/IandS/sft/train/IandS_5_train.csv` | 208,999 行 |
+| `--eval_file` | `data/Amazon23/IandS/sft/valid/IandS_5_valid.csv` | 50,984 行 |
+| `--sid_index_path` | `data/Amazon23/IandS/sft/index/IandS.index.json` | 25,847 item × 3 层 |
+| `--item_meta_path` | `data/Amazon23/IandS/sft/index/IandS.item.json` | 含 `title`/`description`/`text` |
+| `--sid_vocab_path` | `data/Amazon23/IandS/sft/info/sid_vocab.json` | **本项目新增参数**；留空自动推导（§6.4(4)） |
+| `--category` | 类目**全名**（域代号无效） | `Industrial_and_Scientific` |
+| `--cutoff_len` | — | 400（含 T4）/ 320（不含 T4），见 §3.1 |
+
+| `evaluate.py` 参数 | 指向 | 备注 |
+|---|---|---|
+| `--test_data_path` | `.../sft/test/IandS_5_test.csv` | 50,982 行 |
+| `--info_file` | `.../sft/info/IandS.item_info.txt` | 制表符分隔 `sid \t title \t item_id` |
+| `--base_model` | **训练输出目录**（`outputs/sft_IandS/`），**不是** `models/Qwen3-0.6B` | 🔴 见下 |
+
+🔴 **`--base_model` 必须指向训练输出目录**：`evaluate.py` 里**没有任何 `add_tokens`**
+（`evaluate.py:72` 只做 `AutoTokenizer.from_pretrained(base_model)`），它依赖
+`sft.py:386` 的 `tokenizer.save_pretrained(output_dir)` —— 即**训练产物自带扩展后的 tokenizer**。
+指回原始基座的话，SID 会被切成碎片（`<a_1>` → 6 个 token），Trie 全挂。这是 MiniOneRec 的既有设计。
+
+> ⚠️ **诚实边界（未接线项，不影响 Run-0 可跑）**：`tasks/*.jsonl` 与
+> `prompts/{alpaca,chatml}/*.jsonl` **目前没有消费方**。训练端 T1/T2/T3 的数据由 `data.py`
+> 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:313` 的 `SidItemFeatDataset` 用
+> `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:315` 的 `FusionSeqRecDataset` 同）。
+> 明文 prompt 渲染产物是给后续「格式消融 / 训练端直读明文」预留的，暂未接线。
+
+---
+
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
 
 | 检查项 | IandS | VG | 判定 |
@@ -240,7 +275,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 | 项 | V0 | 本项目 | 理由 |
 |---|---|---|---|
 | `cutoff_len` | 512 | **400**（不带 T4 可 320） | `[实测]` 全量：T1 ≤180、T3 ≤277、**T4 ≤392**；512 有 40% 是纯 padding |
-| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | 需支持 `Video_Games` | `[代码] sft.py:120` 的 `category_dict` 只有 5 个键，VG 会 KeyError |
+| `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:169` **和** `evaluate.py:54` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
 
 > ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
 > 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
@@ -461,6 +496,42 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 > ⚠️ 但**小文件的 `X-Linked-Etag` 并不是内容 sha256**（0.6B `config.json` 的 etag 是
 > `f5c3703b78ae…`）→ **只对 LFS 权重做哈希校验**才是对的做法，别拿 etag 当 sha256 比。
 
+### 4.6 本项目对 MiniOneRec 训练脚本的**实际改动**（跑之前必看）
+
+上文多处说"骨架沿用 MiniOneRec"，但**不是一行不改**。截至 2026-09-16 动过的全部如下
+（刻意保持最小，原则是"能无误跑起来优先，不为了对齐而改"）：
+
+| 文件 | 位置 | 改动 | 理由 / 依据 |
+|---|---|---|---|
+| `sft.py` | `:58` 新增 `SidVocabLoader` | 注册改读 `info/sid_vocab.json`（**码序**），并断言 `index` 的 token ⊆ 码表 | `[实测]` §6.4(4)：`TokenExtender` 的 `sorted()` 使 765/768 个 id 与码序不同 → M4 码本初始化会静默错位 |
+| `sft.py` | `:162` 新增 `--sid_vocab_path` | 留空时从 `--sid_index_path` 自动推导 `<sft>/info/sid_vocab.json` | 少一个必填参数 |
+| `sft.py` | `:273-277` 注册块 | 注册后把 `token→id` 落盘 `output_dir/sid_token_map.json` | 复现 / M4 / 评估端对齐 |
+| `sft.py` | `:210` `padding_side` | `"left"` → `"right"` | §4.3（复制粘贴遗留；纯 RoPE 下数学等价） |
+| `sft.py` | `:371` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
+| `requirements-core.txt` | — | 补 `fire==0.7.1` | `[实测]` `fire.Fire(train)` 是入口（`sft.py:391`），缺它直接 `ModuleNotFoundError`；原 `requirements.txt:30` 有，裁剪版漏了 |
+
+**刻意没改的**：
+- `data.py` 三个 Dataset 类与提示词模板**一字未动** —— 即 §2.1「全部裸写」定版**尚未落到 `data.py`**，
+  现状仍是 verbatim 带引号版（诚实边界见 §6.4(5)）。
+- `sft.py` 的单阶段 concat 配比（T1:T2:T3）保持原样，Run-0 才有一个干净锚点。
+
+**`[实测]` 注册端到端自检**（`scripts/sft/verify_run0_registration.py --domain IandS`）：
+
+```
+vocab=768  head=['<a_0>'..'<a_3>']   tail=['<c_252>'..'<c_255>']   layers={'a':256,'b':256,'c':256}
+index coverage = used=768 / vocab=768 / missing=0
+len(tokenizer) = 151669 -> 152437          id range = [151669, 152436]
+码序 == id 连续 : True
+'<a_115><b_51><c_233>' -> [151784, 151976, 152414]   (len=3)
+'### Response:\n'      -> [14374, 5949, 510]         (len=3，与 evaluate.py:84 硬编码 prefix_index 一致)
+T1 目标结构 512/512 通过 = [3 个 SID] + [\n, EOS]
+```
+
+> 最后一行解释了一个容易误判的点：T1 的 label **不是 3 个 token**，而是
+> `[a, b, c, \n, EOS]` 共 5 个。`\n` 不是脏数据 —— `LogitProcessor.py` 第 4 步（`count=3`）
+> 命中 `hash([a,b,c])` 只放 `\n`，第 5 步才命中 `hash([a,b,c,\n])` 放 EOS，
+> 与 `data.py:417` 的 `output = target_item + "\n"` 完全自洽。
+
 ---
 
 ## 5. 口径决策（写死，改动 = 作废数字）
@@ -571,8 +642,67 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 （与 §3.4.2 宽松口径同源）。MiniOneRec/TIGER 用 Sinkhorn 保证唯一性所以没这个现象。
 若 Run-1 显示 T2 拖后腿，退路是"T2a 只在桶大小=1 的 SID 上构造"。
 
-**(3) 待权重下载后实测**：Qwen3-0.6B `initializer_range=0.02`，新增 768 行按此初始化；
-预训练 151,936 行的实际 std 需下权重后测。若二者差一个量级，S0 的 LR 要单独调（这是 S0 存在的**最强技术理由**）。
+**(3) `[实测]` 新增 token 的 embedding 初始化走 `mean_resizing`，不是 `initializer_range`**
+
+（2026-09-16，探针 `scripts/sft/probe_vocab_registration.py`，Qwen3-0.6B fp32 CPU）
+
+原推断（"新增 768 行按 `initializer_range=0.02` 初始化，若与预训练行 std 差一个量级则 S0 必须调 LR"）
+**已被实测推翻一半**：
+
+| 区间 | 行数 | std | 来源 |
+|---|---:|---:|---|
+| 旧行 `[0, 151936)` | 151,936 | **0.02920** | 预训练权重（resize 后逐位保留，已验证） |
+| 旧 padding 区 `[151669, 151936)` | 267 | 0.00953 | ⚠️ 未被 resize 触及 |
+| 真新行 `[151936, 152437)` | 501 | **0.00942** | `mean_resizing=True` |
+
+- `resize_token_embeddings` 签名默认 **`mean_resizing: bool = True`**（`modeling_utils.py:3177`）
+  → 新行按**旧行 mean + 协方差多元正态**采样（[vocab-expansion](https://nlp.stanford.edu/~johnhew/vocab-expansion.html)），
+  并打一条 `logger.warning_once`。实测 `mean_resizing=False` 才给 std = 0.02001。
+- 差距 **3.1 倍**，不是"一个量级" ⟹ **S0 的理由要改写**：不是"尺度不匹配"，
+  而是 mean_resizing 的**设计后果就是压低新 token 的初始概率**（降低对已有 token 分布的 KL 扰动）。
+  768 个 SID 全是 T1 的输出目标 → 初始 logit 偏小 ⇒ **warmup 的作用是"把它们的概率拉起来"**。
+- 🔴 **僵尸区**：`len(tokenizer)` = **151669**，而 `config.vocab_size` = **151936**（= 1187 × 128），
+  **gap = 267**。所以 `resize_token_embeddings(len(tokenizer))`（MiniOneRec 原始写法）下，
+  新 token id 从 151669 起，**前 267 个（`<a_0>` … `<b_10>`）落在旧 padding 行**，未经 mean_resizing。
+  两段 std 恰好接近（0.0095 vs 0.0094），**都无预训练语义 ⇒ 判定可接受**；
+  M4 语义初始化整体覆盖 768 行时会自动消解。
+- ⚠️ resize 后 `config.vocab_size` = **152437**，**不再是 128 的倍数**。纯性能项（tensor core），
+  可选 `pad_to_multiple_of=128` → 152448。MiniOneRec 没做这一步。
+
+**(4) `[实测]` 词表注册的 token 来源：不能用 `index/`，要用 `info/sid_vocab.json`**
+
+MiniOneRec 的 `TokenExtender`（`sft.py:42-55`）是**从 `index.json` 现收现加**，且 `sorted()` 排序。
+照搬到本项目会同时踩两个坑：
+
+| 坑 | 实测（`scripts/sft/probe_vocab_registration.py`） |
+|---|---|
+| **顺序** | `sorted()` 是字典序（`<a_0>, <a_100>, … <a_109>, <a_10>`），与本项目 `sid_vocab.json` 的**码序**下 **765 / 768 个 token 的 id 不同** |
+| **集合** | index 只含"被用到过"的码：**VG 只有 759 个**（缺 9 个 a 层死码 = **9/256 = 3.52%**，与 `SID_PIPELINE` 记的 VG L0 死码率**完全吻合**）；IandS 恰好 768 |
+
+Run-0 自身是自洽的（id 只是重新编号），但：
+- 🔴 **M4 码本语义初始化会静默错位** —— `codebook.npy` 是 `(3,256,32)`、按码序排列，
+  `<a_k>` 必须落在 `cb[0][k]`；
+- 🔴 VG 还会**少 9 行**，两域词表大小不一致。
+
+**已定版（2026-09-16）**：注册一律读 `info/sid_vocab.json`（768，**码序**），并断言
+`set(index 的 token) ⊆ set(vocab)`；**只有找不到 vocab 时才回退** MiniOneRec 的 `sorted()` 路径
+（并打 WARN）。已落地 `sft.py:58 SidVocabLoader` + `:214-277` 注册块（推导 / 断言 / 注册 / 落盘），端到端自检见 §4.6。
+
+**(5) 🔴 `data.py` 的提示词仍与 §2.1 定版**漂移**（2026-09-16 发现，**刻意未修**）**
+
+| 位置 | 现状 | §2.1 定版 |
+|---|---|---|
+| `data.py:738` `SidItemFeatDataset.generate_prompt`（sid2title） | `What is the title of item "{sid}"?` —— **带双引号** | 全部裸写 |
+| `data.py:735`（title2sid） | `Which item has the title: {title}?` —— 无引号 | 全部裸写 ✅ |
+| `data.py:417` T1 的 `output` | `target_item + "\n"` —— **带尾部 `\n`** | completion 末尾不加 `\n` |
+
+**为什么留着**：Run-0 要**只改「基座」一个变量**（`Qwen2.5-0.5B` → `Qwen3-0.6B`）。
+提示词口径（裸写、去 `\n`）的改动留到 Run-1 之后单独消融，否则出了数字归因不干净。
+
+🔴 **连带发现**：`info/prompt_templates.json` 自称"训练端直接读、防止两端漂移"，
+但 **`grep data.py` 找不到任何读它的代码** —— 这个防漂移机制**实际上没接线**。
+`prompts/{alpaca,chatml}/*.jsonl` 同理（§3.2 已标注"零消费方"）。
+→ 真要防漂移，得把 `data.py` 的 `generate_prompt` 改成读 `prompt_templates.json`；**未做**。
 
 ### 6.5 执行队列（每项只改一个变量，否则数字归因不了）
 
@@ -596,4 +726,5 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 | 语义初始化（M4） | ⏸ | `info/codebook.npy` 已备好 `(3,256,32)`，训练端还没接 |
 | 课程学习（M4） | ⏸ | 方案已定案 → **§6**（S0 warmup / S1 混合 / S2 退火）；等 Run-0 锚点跑完再上 |
 | raw 桶 vs 唯一化的端到端消融 | ⏸ | `sid_sk.npy` 已存档，切口径重跑即可 |
-| Qwen3-0.6B 权重 | ⏸ | 本地只有 tokenizer（`models/Qwen3-0.6B/`），**权重未下载**（约 1.5GB，需沙箱外执行） |
+| Qwen3-0.6B 权重 | ✅ | `[实测]` 2026-09-16 已下并校验通过：1,503,300,328 B、sha256 `f47f7117…6874b` **逐位一致**（§4.5）。⚠️ **teacher `Qwen3-1.7B` 仍未下载**（4.06 GB） |
+| SID 词表注册 | ✅ | `[实测]` 已定版 + 落地（§6.4(4) / §4.6）；自检脚本 `scripts/sft/verify_run0_registration.py --domain IandS` 全绿 |

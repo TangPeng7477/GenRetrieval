@@ -7,11 +7,12 @@
 在 [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) 开源框架上做的系统性升级：
 **Amazon Reviews 2023 + 图文多模态 → 门控融合 → RQ-VAE 语义 ID（SID）→ LLM 生成式召回**。
 
-> **当前进度（2026-09-14）**：**数据与 SID 构建阶段已在两个域上定版**
+> **当前进度（2026-09-16）**：**数据与 SID 构建阶段已在两个域上定版**
 > —— 域 A `Industrial_and_Scientific`（25,847 商品）与域 B `Video_Games`（25,611 商品）
 > 各跑完完整 pipeline（M1 / M2 完成）；**召回阶段基线矩阵已建好并本地实跑**（见 §7 与 [`baseline/`](baseline/)）；
-> **SFT 数据集（M3 前置）双域已产出并通过体检**（见 §8 与 [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)），
-> SFT 训练 / RL 阶段待上云启动。
+> **SFT 数据集（M3）双域已产出并通过体检**；基座权重已下载校验、**SID 词表注册已落地并自检通过**。
+> 下一步 = **IandS 单域 Run-0 训练**（先跑通一域，再考虑 VG），见 §8 与
+> [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)。
 > 本 README 讲"项目是什么、SID 怎么定版的、怎么复现"；
 > 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)**。
 
@@ -251,9 +252,11 @@ python scripts/data/prepare_amazon23.py --category Video_Games --short VG
 python scripts/multimodal/download_images.py --short VG
 bash scripts/multimodal/encode_all.sh VG
 bash scripts/multimodal/run_vg_sid.sh
-# SFT / RL（上云 3090，待启动）
-bash sft_3090.sh
-MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
+# SFT（上云 3090）：先自检，再训练、评估 —— 详见 §8.7
+./.venv/Scripts/python.exe scripts/sft/verify_run0_registration.py --domain IandS
+bash sft_run0.sh
+bash evaluate_run0.sh
+# RL：待 SFT Run-0 跑通后再启动
 ```
 
 > ⚠️ 不要直接 `pip install -r requirements.txt`（含 `torchrec`/`fbgemm_gpu`/`deepspeed` 等装不上或冗余项），
@@ -302,17 +305,21 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 - **被直接 import 的上游文件**（复制自 MiniOneRec 但在用）：`rq/datasets.py`（EmbDataset）、
   `rq/rqkmeans_faiss.py`（FAISS-RQ 量化器）、`rq/models/{rqvae,rq,vq,layers}.py`
 
-### 5.2 未启用（复刻自 MiniOneRec，本项目未运行）
+### 5.2 V0 复刻链路（MiniOneRec 原样保留，**M3 起部分启用**）
 
-| 类别 | 文件 |
+| 状态 | 文件 |
 |---|---|
-| V0 训练链路 | `data.py` `sasrec.py` `sft.py` `rl.py` `evaluate.py` `minionerec_trainer.py` `LogitProcessor.py` `SASRecModules_ori.py` `utility.py` `convert_dataset.py` `split.py` `merge.py` `calc.py` `data_test.py` `sinkhorn_demo.py` + 各 `.sh` / `_3090.sh` |
-| 上游分支 | `convert_dataset_gpr.py` `sft_gpr.py` `rl_gpr.py` `ts_rec_data.py` `ts_rec_sft.py` `ts_rec_data/` `config/zero2_opt.yaml` |
-| 旧数据管线 | `data/amazon18_data_process.py` `data/amazon23_data_process.py` `data/process.py` |
-| 另一条索引路线 | `rq/rqvae.py`(原版) `rq/trainer.py` `rq/utils.py` `rq/rqkmeans_constrained.py` `rq/rqkmeans_plus.py` `rq/generate_indices*.py` `rq/text2emb/` |
+| **✅ M3 在用**（2026-09-16） | `data.py`（三个 SFT Dataset 类）· `sft.py`（**已改 3 处** → [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)）· `LogitProcessor.py`（Trie 约束解码）· `evaluate.py`（已就位，待训练产物） |
+| ⏸ 未启用 | `sasrec.py` `rl.py` `minionerec_trainer.py` `SASRecModules_ori.py` `utility.py` `convert_dataset.py` `split.py` `merge.py` `calc.py` `data_test.py` `sinkhorn_demo.py` |
+| ⏸ 上游分支 | `convert_dataset_gpr.py` `sft_gpr.py` `rl_gpr.py` `ts_rec_data.py` `ts_rec_sft.py` `ts_rec_data/` `config/zero2_opt.yaml` |
+| ⏸ 旧数据管线 | `data/amazon18_data_process.py` `data/amazon23_data_process.py` `data/process.py` |
+| ⏸ 另一条索引路线 | `rq/rqvae.py`(原版) `rq/trainer.py` `rq/utils.py` `rq/rqkmeans_constrained.py` `rq/rqkmeans_plus.py` `rq/generate_indices*.py` `rq/text2emb/` |
 
-**判据**：`models/` 无权重、`logs/` 无训练日志、`results/` 无对应产物。
 §3.4 的 V0 数字来自原 MiniOneRec 项目（RTX 3090 实测），在本仓仅作待超越的锚点。
+
+> ⚠️ 🔴 根目录 `sft.sh` / `sft_3090.sh` / `evaluate.sh` / `evaluate_3090.sh` **仍是 MiniOneRec 原版**，
+> 内部数据路径写死为 `./data/Amazon/train/${CATEGORY}*11.csv` —— **本仓不存在该路径**，
+> 直接跑会 `ls` 空、`${test_file}` 为空字符串。本项目入口是 **`sft_run0.sh`**（见 §8.7）。
 
 ### 5.3 召回基线（`baseline/`，独立包，不改动主干）
 
@@ -338,7 +345,7 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |
 | **[docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)** | **召回评估协议定版**：数据集划分依据 + 指标定义 + 冷/热分桶 + 报数模板 + 给 SFT/RL 的三条闸门 |
-| **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)** | **SFT 唯一入口**：提示词设计依据（文献对照）+ 四任务数据集规格 + 体检实测 + 碰撞映射口径 |
+| **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)** | **SFT 唯一入口**：提示词设计依据（文献对照）+ 四任务数据集规格 + **上游产物→训练参数映射（§3.2）** + 体检实测 + 碰撞映射口径 |
 | **[baseline/SURVEY.md](baseline/SURVEY.md)** | **召回基线文献综述**：经典/生成式 baseline 清单、公开数字（标核验等级）、能/不能横比的原因 |
 | [baseline/README.md](baseline/README.md) | 召回基线的评估口径、复现设置与命令、踩坑记录 |
 | [baseline/RESULTS.md](baseline/RESULTS.md) | 双域基线实测结果表（自动生成，随跑随更新） |
@@ -481,11 +488,12 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 | 768 个 SID token 各占 **1 个 token** | ✅ | ✅ |
 | CSV ↔ index.json 往返一致 | 0 条不一致 | 0 条不一致 |
 | T1 total 长度 max（含 target+EOS） | **179** | **179** |
-| T4 total 长度 max | 309 | 221 |
+| T4 total 长度 max（**抽样值，已作废**） | ~~309~~ | ~~221~~ |
 | MiniOneRec 三个 Dataset 类直接可用 | ✅ | ✅ |
 
-→ **`cutoff_len` 从 V0 的 512 降到 320**（有 40% 是纯 padding）；
-**`sft.py` / `data.py` 一行不用改**，只需换路径 + 把 `category_dict` 加上 `Video_Games`。
+→ `cutoff_len` **带 T4 用 400**（全量真值 391 / 362，18 / 3 条超 320，见 §8.4）。
+→ 训练端**不是"一行不用改"**：`sft.py` 已改 3 处（词表注册 / `padding_side` / `torch_compile`），
+   `requirements-core.txt` 补了 `fire`。完整清单见 [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)。
 
 ### 8.4 明文 prompt 渲染（`scripts/data/build_sft_prompts.py`，双格式）
 
@@ -526,16 +534,55 @@ SID 定版为语义桶，一个 SID 可能对应 2~5 个物品（I&S 碰撞 7.92
 **主榜用严格口径**：每桶取训练频次最高的 1 个物品作代表（平局取最小 item_id，无泄漏），
 与 baseline 同构；宽松口径（目标 ∈ 整桶即命中）单独报作上界 → `EVAL_PROTOCOL §3.4.2`。
 
-### 8.6 复现
+### 8.6 复现（数据构造）
 
 ```bash
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain IandS   # ~24 s
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain VG      # ~35 s
 ./.venv/Scripts/python.exe scripts/data/verify_sft_data.py  --domain all
+# 明文 prompt 渲染（可选；训练端暂未消费，见 SFT_PIPELINE §3.2）
+./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all --verify
 ```
 
-> ⏸ **下一步依赖**：Qwen3-0.6B **权重未下载**（本地只有 tokenizer，约 1.5GB，需沙箱外执行）；
-> M4 的语义初始化已备好码本 `info/codebook.npy` `(3,256,32)`。
+### 8.7 训练 / 评估入口（2026-09-16）
+
+**当前决策：先 IandS 单域跑通，验证整条链路有效后再上 VG。**
+
+```bash
+# 1) 基座权重。student 已下并校验（1,503,300,328 B / sha256 f47f7117…6874b 逐位一致）
+bash scripts/download_base_models.sh                 # 幂等，已下载的会 skip
+bash scripts/download_base_models.sh --target all    # 需要 teacher 时（4.06 GB）
+
+# 2) 跑训练前自检：SID 注册 + 数据端到端 token 化（不需要 GPU，约 1 分钟）
+./.venv/Scripts/python.exe scripts/sft/verify_run0_registration.py --domain IandS
+
+# 3) 训练（0.6B 需 24GB 卡，本地 4GB 跑不了）
+bash sft_run0.sh                                     # 默认 IandS；DOMAIN=VG 切换
+
+# 4) 评估
+bash evaluate_run0.sh
+```
+
+**上游产物 → 训练参数映射**（完整表见 [SFT_PIPELINE §3.2](docs/SFT_PIPELINE.md)）：
+
+| 上游文件 | 训练/评估参数 |
+|---|---|
+| `data/Amazon23/IandS/sft/train/IandS_5_train.csv` | `sft.py --train_file` |
+| `data/Amazon23/IandS/sft/valid/IandS_5_valid.csv` | `sft.py --eval_file` |
+| `data/Amazon23/IandS/sft/index/IandS.index.json` | `sft.py --sid_index_path` |
+| `data/Amazon23/IandS/sft/index/IandS.item.json` | `sft.py --item_meta_path` |
+| `data/Amazon23/IandS/sft/info/sid_vocab.json` | `sft.py --sid_vocab_path`（**本项目新增**，留空自动推导） |
+| `data/Amazon23/IandS/sft/test/IandS_5_test.csv` | `evaluate.py --test_data_path` |
+| `data/Amazon23/IandS/sft/info/IandS.item_info.txt` | `evaluate.py --info_file` |
+
+🔴 域代号是 **`IandS`**（用于路径），`--category` 要写**全名** `Industrial_and_Scientific` —— 两者别混。
+🔴 `evaluate.py --base_model` 必须指向**训练输出目录**（自带扩展后的 tokenizer = 152437）；
+指回 `models/Qwen3-0.6B` 会让 SID 被切成碎片、Trie 全挂。
+
+> ⚠️ 根目录 `sft.sh` / `sft_3090.sh` / `evaluate.sh` / `evaluate_3090.sh` 是 MiniOneRec 原版，
+> 数据路径写死 `./data/Amazon/...`（**本仓不存在**），**不要直接用**。
+>
+> ⏸ M4 的语义初始化已备好码本 `info/codebook.npy` `(3,256,32)`，训练端尚未接。
 
 ---
 
