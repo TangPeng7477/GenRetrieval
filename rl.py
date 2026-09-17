@@ -9,6 +9,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 from minionerec_trainer import ReReTrainer
 from sasrec import SASRec
+# 🔴 复用 sft.py 的逗号参数解析器（单一实现，别在本文件重写一份）：
+#    fire 会把命令行 `a,b,c` 解析成 **tuple**，直接 str(v).split(",") 会得到脏元素。
+#    这个 bug 在 SFT 侧实测踩过（见 sft.py:147 的注释），RL 侧新增的 LoRA 参数同源。
+from sft import parse_csv_list
 from fire import Fire
 import pickle
 import math
@@ -81,6 +85,30 @@ def train(
 
     # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
     precision: str = "bf16",
+
+    # ---- LoRA（[本项目新增] 本文件原本完全不支持 LoRA）----
+    # 为什么 RL 侧**不需要** modules_to_save（与 SFT 相反）：SFT 时 SID 是刚 add_tokens
+    # 出来的新 token，embed_tokens 不训就永远随机初始化；而 RL 是在 SFT 产物之上接着训，
+    # SID 的 embedding 已经训好了 ⟹ 冻结它们、只训 attention 是 GRPO+LoRA 的常规做法。
+    # [实测] 3050Ti 4GB / 16 条序列（RL_PIPELINE §6.1 / §6.3）：
+    #   带 embed_tokens,lm_head -> 可训 321.4M，优化器 step 瞬时峰值 4.20 GiB（超物理）
+    #   不带                    -> 可训   9.2M，峰值            2.59 GiB
+    # 另一个坑：带 modules_to_save 会**破坏 tie_word_embeddings** —— [实测] resize 后
+    #   tie=True，套上 LoRA 后变成两份独立张量，词表参数直接翻倍。
+    use_lora: bool = False,
+    lora_r: int = 32,
+    lora_alpha: int = 64,
+    lora_dropout: float = 0.05,
+    lora_targets: str = "q_proj,k_proj,v_proj,o_proj",
+    lora_modules_to_save: str = "",   # 留空 = 不训 embedding / lm_head（RL 推荐）
+
+    # 梯度检查点：用时间换激活内存。**本地小卡必须开**。
+    # [实测] 3050Ti 4GB / 16 条序列（prompt 177 + completion 16）：
+    #   关 = 9.33 GiB（必然换页）| 开 = 2.59 GiB。64 条序列时 3.74 GiB 仍可装。
+    grad_ckpt: bool = False,
+
+    # 训练步数上限（-1 = 按 num_train_epochs）。本地冒烟用它把训练截到 1~2 步。
+    max_steps: int = -1,
 ):
 
     # ---- 计算精度（[本项目新增] 原本三处硬编码 bf16）----
@@ -132,6 +160,10 @@ def train(
           f"(prefix_index=3 成立)  vocab={len(_tok_probe)}")
     print(f"[guard] precision={precision} -> dtype={_dt}  "
           f"(bf16 需 Ampere+；V100/Volta 请用 fp16)")
+    print(f"[guard] use_lora={use_lora}  grad_ckpt={grad_ckpt}  max_steps={max_steps}")
+    if not grad_ckpt:
+        print("[guard] \u26a0\ufe0f gradient_checkpointing=OFF —— [实测] 3050Ti 4GB 上 16 条序列要 "
+              "9.33 GiB，本地跑请加 --grad_ckpt True；3090 24G 无所谓")
 
 
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
@@ -196,9 +228,20 @@ def train(
     print("train_dataset: ", train_dataset)
     print("eval_dataset: ", eval_dataset)
 
-    llm_model = AutoModelForCausalLM.from_pretrained(model_path, dtype=_dt, device_map="auto", attn_implementation=_attn_impl)
-    device = llm_model.device
+    # 🔴 [本项目修正] 原版这里**无条件**加载一份 llm_model，但它只被 reward_type=="semantic"
+    #    用到（下面 item_ada_embd.to(llm_model.device)）。rule/ranking 奖励下它是**纯重复**：
+    #    训练用的模型由 ReReTrainer 按 model_init_kwargs 自己再加载一份 ⟹ 白白多占一份权重
+    #    （0.6B bf16 = 1.14 GiB）。而这 1.14 GiB 往往正是"本地能不能跑"的分界线。
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if reward_type == "semantic":
+        llm_model = AutoModelForCausalLM.from_pretrained(
+            model_path, dtype=_dt, device_map="auto", attn_implementation=_attn_impl)
+        device = llm_model.device
+    else:
+        llm_model = None
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[mem] reward_type={reward_type} 不需要额外模型副本，跳过 llm_model 加载"
+              f"（省约 1.14 GiB）  device={device}")
     
     len_seq = 10
     item_num = len(item_name)
@@ -329,7 +372,10 @@ def train(
     report_to = "wandb" if wandb_project or wandb_run_name else "none"
 
     training_args = GRPOConfig(output_dir=output_dir,
-                                model_init_kwargs={"attn_implementation": _attn_impl},
+                                # 训练用的模型由 ReReTrainer 自己加载；dtype 必须在这里给，
+                                # 否则 fp16 精度下它会按 config.json 的默认 dtype 加载。
+                                model_init_kwargs={"attn_implementation": _attn_impl,
+                                                   "dtype": _dt},
                                 save_steps=save_steps,
                                 save_total_limit=save_total_limit,
                                 eval_strategy="steps",
@@ -355,9 +401,35 @@ def train(
                                 report_to=report_to,
                                 run_name=wandb_run_name,
                                 torch_compile=torch_compile,
+                                gradient_checkpointing=grad_ckpt,
+                                **({"max_steps": max_steps} if max_steps and max_steps > 0 else {}),
                             )
+    # ---- LoRA：构造 PeftConfig 交给 ReReTrainer（而不是在这里预 wrap 模型）----
+    # 依据 minionerec_trainer.py:280-292 —— 它拿到 peft_config 会 get_peft_model()，
+    # 且 is_peft_model(model) 为真时把 **self.ref_model 置 None**：参考模型不额外占权重，
+    # 靠 disable_adapter() 复用同一份（:901-904）。这就是"GRPO 显存要翻倍"这个说法
+    # 在 PEFT 下不成立的机制。
+    peft_config = None
+    if use_lora:
+        from peft import LoraConfig
+        _targets = parse_csv_list(lora_targets)
+        _msave = parse_csv_list(lora_modules_to_save)
+        if not _targets:
+            raise ValueError(f"--lora_targets 解析为空：{lora_targets!r}")
+        peft_config = LoraConfig(
+            r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, bias="none",
+            task_type="CAUSAL_LM", target_modules=_targets, modules_to_save=_msave or None,
+        )
+        print(f"[LoRA] r={lora_r} alpha={lora_alpha} dropout={lora_dropout} targets={_targets}")
+        _risky = [m for m in _msave if m in ("embed_tokens", "lm_head")]
+        print(f"[LoRA] modules_to_save={_msave or '（空）'}"
+              + (f"   ⚠️ 含 {_risky} -> 词表参数翻倍、破坏 tie；[实测] 优化器 step 峰值 "
+                 f"2.59 -> 4.20 GiB，本地 4GB 会超" if _risky else
+                 "   （推荐：SID embedding 在 SFT 已训好，RL 不必再训）"))
+
     trainer = ReReTrainer(
         model=model_path,
+        peft_config=peft_config,
         base_model=model_path,
         dapo=dapo,
         gspo=gspo,
@@ -375,12 +447,36 @@ def train(
         args=training_args,
     )
 
+    # 🔴 LoRA + gradient_checkpointing 必须补这一句，否则**梯度静默变成 None**：
+    #    PyTorch 的 checkpoint 要求该段计算的输入 requires_grad，而 LoRA 冻结了 base、
+    #    embed_tokens 也不可训 ⟹ 第一层检查点的输入不 require grad，只会打印一条 warning
+    #    然后把梯度置 None —— 显存看着很美，其实模型没在学。
+    #    [实测] transformers/modeling_utils.py:2849 有这个 API，但 Trainer / TRL / ReReTrainer
+    #    **没有任何一方自动调用**（已 grep 三处确认）。
+    if use_lora and grad_ckpt:
+        trainer.model.enable_input_require_grads()
+        print("[LoRA] enable_input_require_grads() 已调用（gradient checkpointing 下保梯度）")
+    if use_lora:
+        _n = sum(p.numel() for p in trainer.model.parameters() if p.requires_grad)
+        _tot = sum(p.numel() for p in trainer.model.parameters())
+        print(f"[LoRA] 可训参数 {_n:,} / {_tot:,} = {100*_n/_tot:.2f}%")
+
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     trainer.save_model(output_dir)
 
     output_dir = os.path.join(output_dir, "final_checkpoint")
-    trainer.model.save_pretrained(output_dir)
+    # 🔴 LoRA 下 trainer.model 是 PeftModel，直接 save_pretrained 只落 adapter
+    #    （此时 OUTPUT_DIR 根目录那份就是 adapter），而 evaluate.py 用
+    #    AutoModelForCausalLM.from_pretrained 原样加载 ⟹ 会失败。必须 merge 后存。
+    final_model = trainer.model
+    if use_lora:
+        try:
+            final_model = final_model.merge_and_unload()
+            print("[LoRA] adapter merged -> final_checkpoint/ 落完整权重")
+        except Exception as e:
+            print(f"[LoRA] merge_and_unload 失败（{type(e).__name__}: {e}），final_checkpoint/ 是 adapter")
+    final_model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
     
 if __name__ == "__main__":

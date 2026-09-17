@@ -697,6 +697,13 @@ REWARD_TYPE=ranking RUN_TAG=R1 bash rl_run0.sh    # 换奖励 / 消融标签
 DOMAIN=VG bash rl_run0.sh               # 换域（需先给 category_dict 补 Video_Games）
 PRECISION=fp16 bash rl_run0.sh          # V100/Volta 卡必须显式切 fp16
 
+# 本地 4GB 冒烟（LoRA + 梯度检查点；实测 4 条序列峰值 2.59 GiB）
+MAX_STEPS=2 TRAIN_BATCH_SIZE=4 NUM_GENERATIONS=4 \
+  USE_LORA=True GRAD_CKPT=True TEST_DURING_TRAINING=False BEAM_SEARCH=False \
+  SAVE_STEPS=999 EVAL_STEP=999 bash rl_run0.sh
+# ⚠️ 别加 LORA_MODULES_TO_SAVE=embed_tokens,lm_head —— RL 不需要，
+#    且会把峰值从 2.59 推到 4.20 GiB（超物理 4.00）。详见 RL_PIPELINE §6.3
+
 # 指标：RL 不产出 results/ 文件，训练内 HR/NDCG 走日志
 grep -E 'HR@|NDCG@|reward' logs/rl/IandS-rl0/rl.log | tail -30
 

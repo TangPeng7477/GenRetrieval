@@ -32,7 +32,9 @@ RUN_TAG="${RUN_TAG:-rl0}"                            # rl0 = GRPO 锚点（rule 
 # ---------------- 实验 ID ----------------
 #   EXP_ID = <域>-<RUN_TAG>      例 IandS-rl0
 #   训练产物 outputs/<EXP_ID>/   日志 logs/rl/<EXP_ID>/   元数据 logs/rl/<EXP_ID>/run.meta.json
-EXP_ID="${EXP_ID:-${DOMAIN}-${RUN_TAG}}"
+LORA_SUFFIX=""
+if [ "${USE_LORA}" = "True" ] || [ "${USE_LORA}" = "true" ]; then LORA_SUFFIX="-lora"; fi
+EXP_ID="${EXP_ID:-${DOMAIN}-${RUN_TAG}${LORA_SUFFIX}}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/${EXP_ID}}"
 
 # ---------------- 训练超参（默认给 3090 24G，单卡）----------------
@@ -61,6 +63,31 @@ TORCH_COMPILE="${TORCH_COMPILE:-False}"              # [红线] 默认关
 OPTIM="${OPTIM:-paged_adamw_32bit}"
 # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）
 PRECISION="${PRECISION:-bf16}"
+
+# ---------------- LoRA + 梯度检查点（本地 4GB 可跑的关键）----------------
+# [实测] 3050Ti 4.00 GiB / prompt 177 + completion 16 / 16 条序列：
+#   grad_ckpt=off              -> 9.33 GiB  ✗ 必换页
+#   grad_ckpt=on               -> 2.59 GiB  ✓
+#   grad_ckpt=on + msave       -> 4.20 GiB  ✗（优化器 step 瞬时峰值超物理）
+# 64 条序列 grad_ckpt=on 也只有 3.74 GiB ✓
+USE_LORA="${USE_LORA:-False}"
+LORA_R="${LORA_R:-32}"
+LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+LORA_TARGETS="${LORA_TARGETS:-q_proj,k_proj,v_proj,o_proj}"
+# ⚠️ RL 侧**推荐留空**：SID 的 embedding 在 SFT 已经训好了。填 embed_tokens,lm_head
+#    会破坏 tie_word_embeddings 并让词表参数翻倍 —— [实测] 峰值 2.59 -> 4.20 GiB。
+LORA_MODULES_TO_SAVE="${LORA_MODULES_TO_SAVE:-}"
+# 梯度检查点：用时间换激活内存。默认开（本地必须）；3090 24G 想快可设 False。
+GRAD_CKPT="${GRAD_CKPT:-True}"
+# 训练步数上限：-1 = 按 NUM_TRAIN_EPOCHS。本地冒烟设 2 即可跑完。
+MAX_STEPS="${MAX_STEPS:--1}"
+# 诊断开关：把每组里的一条候选替换成 ground truth（minionerec_trainer.py:856-873）。
+# 原版 rl.sh / rl_3090.sh 都是 False，本脚本保持同口径。
+# ⚠️ 它只用于**验证梯度链**：未训练的模型 rule 奖励几乎恒为 0 ⟹ advantage 全 0 ⟹
+#    grad_norm 恒 0，看不出 LoRA 是否真的在学。开成 True 后至少有一个正样本，
+#    reward_std > 0、grad_norm > 0，才算把链路验穿。会扰动训练语义，别当正式配置用。
+ADD_GT="${ADD_GT:-False}"
 RESUME="${RESUME:-}"
 
 # ---------------- 上游产物路径 ----------------
@@ -101,6 +128,19 @@ if [ "${missing}" -ne 0 ]; then
   exit 1
 fi
 
+# 🔴 GRPO 硬约束：per_device_train_batch_size 必须能被 num_generations 整除
+#    （minionerec_trainer.py 里会 raise "The global train batch size (B x N) must be evenly
+#      divisible by the number of generations per prompt (G)"）。[实测] 踩过：本地想省显存
+#    把它设成 1 x 4 直接报错 —— 因为 1 不能整除 4，而不是显存的问题。
+#    本地 4GB 想要小显存 + 合法组大小，用 4 prompt x 4 gen（=16 条序列，实测 2.59 GiB）。
+if [ $((TRAIN_BATCH_SIZE % NUM_GENERATIONS)) -ne 0 ]; then
+  echo "[BAD] TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} 不能被 NUM_GENERATIONS=${NUM_GENERATIONS} 整除"
+  echo "      GRPO 会把每个 prompt 复制成 num_generations 条序列做组内比较，"
+  echo "      所以 per_device_train_batch_size 必须是 num_generations 的整数倍。"
+  echo "      合法示例：4x4（16 条序列，本地实测 2.59 GiB）/ 4x2（8 条）/ 8x4（32 条）"
+  exit 1
+fi
+
 mkdir -p "${OUTPUT_DIR}" "./logs/rl/${EXP_ID}"
 
 echo "=========================================="
@@ -118,6 +158,10 @@ echo " beam_search : ${BEAM_SEARCH}   test_during_training=${TEST_DURING_TRAININ
 echo " save        : save_steps=${SAVE_STEPS}  save_total_limit=${SAVE_TOTAL_LIMIT}"
 echo " optim       : ${OPTIM}   torch_compile=${TORCH_COMPILE}"
 echo " precision   : ${PRECISION}   (V100/Volta 请用 fp16)"
+echo " LoRA        : ${USE_LORA}   r=${LORA_R} alpha=${LORA_ALPHA} targets=${LORA_TARGETS}"
+echo "               modules_to_save='${LORA_MODULES_TO_SAVE}'  (RL 推荐留空)"
+echo " grad_ckpt   : ${GRAD_CKPT}   max_steps=${MAX_STEPS}   (本地 4GB 必须开 grad_ckpt)"
+echo " add_gt      : ${ADD_GT}   (True 仅用于诊断梯度链；正式配置应为 False)"
 echo "=========================================="
 
 # 版本元数据（与评估侧同口径，便于回溯"这条 RL 是从哪个 SFT 接着训的"）
@@ -137,6 +181,10 @@ echo "=========================================="
   --set "max_completion_length=${MAX_COMPLETION_LENGTH}" \
   --set "beam_search=${BEAM_SEARCH}" \
   --set "optim=${OPTIM}" \
+  --set "use_lora=${USE_LORA}" \
+  --set "grad_ckpt=${GRAD_CKPT}" \
+  --set "max_steps=${MAX_STEPS}" \
+  --set "add_gt=${ADD_GT}" \
   --set "git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
   > /dev/null
 
@@ -163,7 +211,7 @@ echo "=========================================="
   --test_during_training "${TEST_DURING_TRAINING}" \
   --test_beam "${TEST_BEAM}" \
   --sync_ref_model "${SYNC_REF_MODEL}" \
-  --add_gt False \
+  --add_gt "${ADD_GT}" \
   --dynamic_sampling False \
   --sample_train False \
   --dapo False \
@@ -173,6 +221,14 @@ echo "=========================================="
   --optim "${OPTIM}" \
   --torch_compile "${TORCH_COMPILE}" \
   --precision "${PRECISION}" \
+  --use_lora "${USE_LORA}" \
+  --lora_r "${LORA_R}" \
+  --lora_alpha "${LORA_ALPHA}" \
+  --lora_dropout "${LORA_DROPOUT}" \
+  --lora_targets "${LORA_TARGETS}" \
+  --lora_modules_to_save "${LORA_MODULES_TO_SAVE}" \
+  --grad_ckpt "${GRAD_CKPT}" \
+  --max_steps "${MAX_STEPS}" \
   --seed "${SEED}" \
   --output_dir "${OUTPUT_DIR}" \
   ${RESUME:+--resume_from_checkpoint "${RESUME}"} \
