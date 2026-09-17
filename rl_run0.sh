@@ -59,6 +59,8 @@ SAVE_STEPS="${SAVE_STEPS:-0.1}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"            # 原版 20 -> ~120 GB，本仓下调
 TORCH_COMPILE="${TORCH_COMPILE:-False}"              # [红线] 默认关
 OPTIM="${OPTIM:-paged_adamw_32bit}"
+# 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）
+PRECISION="${PRECISION:-bf16}"
 RESUME="${RESUME:-}"
 
 # ---------------- 上游产物路径 ----------------
@@ -115,6 +117,7 @@ echo " Epochs / LR : ${NUM_TRAIN_EPOCHS} / ${LEARNING_RATE}   beta=${BETA}"
 echo " beam_search : ${BEAM_SEARCH}   test_during_training=${TEST_DURING_TRAINING} (beam=${TEST_BEAM})"
 echo " save        : save_steps=${SAVE_STEPS}  save_total_limit=${SAVE_TOTAL_LIMIT}"
 echo " optim       : ${OPTIM}   torch_compile=${TORCH_COMPILE}"
+echo " precision   : ${PRECISION}   (V100/Volta 请用 fp16)"
 echo "=========================================="
 
 # 版本元数据（与评估侧同口径，便于回溯"这条 RL 是从哪个 SFT 接着训的"）
@@ -169,6 +172,7 @@ echo "=========================================="
   --save_total_limit "${SAVE_TOTAL_LIMIT}" \
   --optim "${OPTIM}" \
   --torch_compile "${TORCH_COMPILE}" \
+  --precision "${PRECISION}" \
   --seed "${SEED}" \
   --output_dir "${OUTPUT_DIR}" \
   ${RESUME:+--resume_from_checkpoint "${RESUME}"} \

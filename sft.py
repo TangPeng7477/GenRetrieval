@@ -224,9 +224,28 @@ def train(
     #    每次保存都要删旧 checkpoint（一次删 60 个文件）会被拦下并中断训练（实测 exit=1）。
     #    顺带一提：传 1.0 不等于"每 epoch 一次"，它会被当成"每 1 步"。
     eval_frac: float = 0.05,
+
+    # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
+    precision: str = "bf16",
 ):
     set_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
+
+    # ---- 计算精度（[本项目新增] 原本三处硬编码 bf16）----
+    # 🔴 bf16 只在 Ampere+（sm_80）有原生支持；V100 是 Volta（sm_70），必须走 fp16。
+    # 🔴 **fp16 不能把模型加载成 fp16**：Trainer 在 fp16=True 时挂 GradScaler，
+    #    而 GradScaler 拒绝 unscale fp16 梯度 —— [实测] 直接报
+    #    "ValueError: Attempting to unscale FP16 gradients"。
+    #    正确做法 = **fp32 主权重 + autocast 把计算降到 fp16**（AMP 的标准形态）。
+    #    代价是权重显存翻倍（0.6B: 1.2G -> 2.4G），换来数值稳定。
+    if precision == "bf16":
+        _dt, _bf16, _fp16 = torch.bfloat16, True, False
+    elif precision == "fp16":
+        _dt, _bf16, _fp16 = torch.float32, False, True
+    elif precision == "fp32":
+        _dt, _bf16, _fp16 = torch.float32, False, False
+    else:
+        raise ValueError(f"precision 只支持 ['bf16', 'fp16', 'fp32']，收到 {precision!r}")
     os.environ['WANDB_PROJECT'] = wandb_project
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
     print(category)
@@ -253,7 +272,7 @@ def train(
     if not train_from_scratch:
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            dtype=torch.bfloat16,
+            dtype=_dt,
             attn_implementation=attn_impl,
         )
     else:
@@ -464,7 +483,8 @@ def train(
             warmup_steps=20,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
-            bf16=True,
+            bf16=_bf16,
+            fp16=_fp16,
             logging_steps=1,
             optim="adamw_torch",
             eval_strategy="steps",

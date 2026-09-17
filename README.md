@@ -409,6 +409,7 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md) | 知识点与机理总览（RQ-VAE / Sinkhorn / 死码 / **指标口径总表（含公式）** + FAQ） |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | 从零跑通（环境 → 数据 → SID → 训练） |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 升级方案与里程碑（M1~M6） |
+| **[docs/PRECISION_GUIDE.md](docs/PRECISION_GUIDE.md)** | **混合精度速查**：bf16/fp16/fp32 位分配与数值范围（带图）+ 对本项目的显存/数值影响 + **V100 能不能跑** |
 | [docs/DATASET.md](docs/DATASET.md) | Amazon23 数据集档案与切分口径 |
 | **[docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)** | **召回评估协议定版**：数据集划分依据 + 指标定义 + 冷/热分桶 + 报数模板 + 给 SFT/RL 的三条闸门 |
 | **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)** | **SFT 唯一入口**：提示词设计依据（文献对照）+ 四任务数据集规格 + **上游产物→训练参数映射（§3.2）** + 体检实测 + 碰撞映射口径 |
@@ -628,6 +629,7 @@ bash sft_run0.sh                     # 默认 IandS -> outputs/IandS-run0/
 DOMAIN=VG bash sft_run0.sh           # 换域
 TASKS=T1 bash sft_run0.sh            # 只跑主任务 -> outputs/IandS-run0-T1/
 RUN_TAG=S0 bash sft_run0.sh          # 课程学习 S0 -> outputs/IandS-S0/
+PRECISION=fp16 bash sft_run0.sh      # V100/Volta 卡必须显式切 fp16（默认 bf16；详见 PRECISION_GUIDE）
 
 # 4) 评估（EXP_ID 自动反推；前置检查会跑「prompt 一致性 / Trie 形状」自检）
 bash evaluate_run0.sh                # -> results/sft/IandS-run0/eval_IandS_beam50.json
@@ -693,6 +695,7 @@ bash rl_run0.sh                         # -> outputs/IandS-rl0/
 SFT_EXP_ID=IandS-S0 bash rl_run0.sh     # 换 SFT 来源
 REWARD_TYPE=ranking RUN_TAG=R1 bash rl_run0.sh    # 换奖励 / 消融标签
 DOMAIN=VG bash rl_run0.sh               # 换域（需先给 category_dict 补 Video_Games）
+PRECISION=fp16 bash rl_run0.sh          # V100/Volta 卡必须显式切 fp16
 
 # 指标：RL 不产出 results/ 文件，训练内 HR/NDCG 走日志
 grep -E 'HR@|NDCG@|reward' logs/rl/IandS-rl0/rl.log | tail -30

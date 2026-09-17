@@ -708,6 +708,10 @@ micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval
 
 ⚠️ 这两项只对本地有意义；**全量训练一律上云**（3090 不受 4 GiB 限制）。
 
+> 🔴 **换卡 / 换精度前先读 [`PRECISION_GUIDE.md`](PRECISION_GUIDE.md)**：`--precision` 已参数化
+> （`bf16` 默认 / `fp16` 给 V100 等无 bf16 的卡 / `fp32` 调试）。⚠️ **fp16 模式的显存约为 bf16 的 2 倍**
+> （AMP 要求 fp32 主权重）——本节实测 4.26 GiB（bf16）vs 8.23 GiB（fp16）。
+
 ---
 
 ## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）

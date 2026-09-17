@@ -198,6 +198,7 @@ grep -E 'HR@|NDCG@|reward' logs/rl/IandS-rl0/rl.log | tail -30
 | 项 | 量级 | 依据 |
 |---|---|---|
 | 显存 | policy bf16 1.2G + ref bf16 1.2G + grads 1.2G + `paged_adamw_32bit` 状态 ~4.8G + 激活/KV ≈ **9–12 GB** | 24G 单卡应可容纳；⚠️ **未实测** |
+| ⚠️ 若换 V100 | 必须 `PRECISION=fp16`，且**显存约翻倍**（fp32 主权重）；16 GB 版跑不动，32 GB 版可以 | 见 [`PRECISION_GUIDE.md`](PRECISION_GUIDE.md) §5 |
 | 单个 checkpoint | ≈ **6 GB**（权重 + fp32 优化器状态） | `[设计推算]` |
 | checkpoint 总量 | `save_total_limit=3` → ~18 GB，加 root + `final_checkpoint` 两份 ≈ **21 GB** | 原版 `save_total_limit=20` 会到 ~120 GB，**本仓已下调** |
 

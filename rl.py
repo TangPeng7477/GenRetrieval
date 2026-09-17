@@ -78,7 +78,26 @@ def train(
     save_total_limit: int = 3,
     # 优化器：paged_adamw_32bit 需 bitsandbytes（本机实测 0.48.1 可用）
     optim: str = "paged_adamw_32bit",
+
+    # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
+    precision: str = "bf16",
 ):
+
+    # ---- 计算精度（[本项目新增] 原本三处硬编码 bf16）----
+    # 🔴 bf16 只在 Ampere+（sm_80）有原生支持；V100 是 Volta（sm_70），必须走 fp16。
+    # 🔴 **fp16 不能把模型加载成 fp16**：Trainer 在 fp16=True 时挂 GradScaler，
+    #    而 GradScaler 拒绝 unscale fp16 梯度 —— [实测] 直接报
+    #    "ValueError: Attempting to unscale FP16 gradients"。
+    #    正确做法 = **fp32 主权重 + autocast 把计算降到 fp16**（AMP 的标准形态）。
+    #    代价是权重显存翻倍（0.6B: 1.2G -> 2.4G），换来数值稳定。
+    if precision == "bf16":
+        _dt, _bf16, _fp16 = torch.bfloat16, True, False
+    elif precision == "fp16":
+        _dt, _bf16, _fp16 = torch.float32, False, True
+    elif precision == "fp32":
+        _dt, _bf16, _fp16 = torch.float32, False, False
+    else:
+        raise ValueError(f"precision 只支持 ['bf16', 'fp16', 'fp32']，收到 {precision!r}")
     _attn_impl = "flash_attention_2"
     try:
         import flash_attn  # noqa: F401
@@ -111,6 +130,8 @@ def train(
         )
     print(f"[guard] SID tokenizer OK: '<a_0>'=1 token, '### Response:\\n'={len(_pfx)} tokens "
           f"(prefix_index=3 成立)  vocab={len(_tok_probe)}")
+    print(f"[guard] precision={precision} -> dtype={_dt}  "
+          f"(bf16 需 Ampere+；V100/Volta 请用 fp16)")
 
 
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
@@ -175,7 +196,7 @@ def train(
     print("train_dataset: ", train_dataset)
     print("eval_dataset: ", eval_dataset)
 
-    llm_model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16, device_map="auto", attn_implementation=_attn_impl)
+    llm_model = AutoModelForCausalLM.from_pretrained(model_path, dtype=_dt, device_map="auto", attn_implementation=_attn_impl)
     device = llm_model.device
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
@@ -326,7 +347,8 @@ def train(
                                 warmup_ratio=0.03,
                                 max_grad_norm= 0.3,
                                 num_train_epochs=num_train_epochs,
-                                bf16=True,
+                                bf16=_bf16,
+                                fp16=_fp16,
                                 optim=optim,
                                 lr_scheduler_type="cosine", 
                                 save_strategy="steps",

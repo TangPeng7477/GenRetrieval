@@ -64,6 +64,11 @@ LORA_TARGETS="${LORA_TARGETS:-q_proj,k_proj,v_proj,o_proj}"
 # 会被拦下并中断训练（实测 exit=1）。注意传 1.0 ≠ 每 epoch 一次，它等于"每 1 步"。
 EVAL_FRAC="${EVAL_FRAC:-0.05}"
 
+# 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
+# 🔴 V100(sm_70) 没有原生 bf16；且 torch 的 is_bf16_supported 会做「只分配张量」的弱探测而
+#    返回 True，transformers 因此**不报错**，会一路用 bf16 跑下去 —— 必须手动指定 fp16。
+PRECISION="${PRECISION:-bf16}"
+
 # ---------------- 上游产物路径（SFT_PIPELINE §3.2） ----------------
 TRAIN_FILE="${SFT_DIR}/train/${DOMAIN}_5_train.csv"
 EVAL_FILE="${SFT_DIR}/valid/${DOMAIN}_5_valid.csv"
@@ -126,6 +131,7 @@ echo " sample      : ${SAMPLE}   (=-1 全量)"
 echo " freeze_LLM  : ${FREEZE_LLM}"
 echo " use_lora    : ${USE_LORA}$([ "${USE_LORA}" = "True" ] && echo "  (r=${LORA_R} targets=${LORA_TARGETS})")"
 echo " eval_frac   : ${EVAL_FRAC}   (本地冒烟请调大，见脚本注释)"
+echo " precision   : ${PRECISION}   (V100/Volta 请用 fp16)"
 echo "=========================================="
 
 "${PY}" sft.py \
@@ -153,6 +159,7 @@ echo "=========================================="
   --lora_dropout "${LORA_DROPOUT}" \
   --lora_target_modules "${LORA_TARGETS}" \
   --eval_frac "${EVAL_FRAC}" \
+  --precision "${PRECISION}" \
   2>&1 | tee "./logs/sft/${EXP_ID}/sft.log"
 
 echo ""

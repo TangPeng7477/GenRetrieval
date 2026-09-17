@@ -50,14 +50,25 @@ def main(
     num_beams: int = 50,
     sid_vocab_path: str = "",   # [本项目新增] 非空则现场注册 SID 词表（dry-run / 未训练基座用）
     max_samples: int = 0,       # [本项目新增] 0=全部；>0 只随机取 N 条（dry-run 用，显著提速）
+
+    # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
+    precision: str = "bf16",
 ):
     random.seed(seed)
+
+    # ---- 计算精度（[本项目新增] 原本硬编码 bf16）----
+    # 纯推理，没有 Trainer、没有 GradScaler ⟹ 直接用 fp16 权重即可（V100 上正确且省显存）。
+    # ⚠️ 训练侧不同：那边 fp16 必须用 fp32 主权重，见 sft.py / rl.py 同名段落。
+    _DTYPE = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
+    if precision not in _DTYPE:
+        raise ValueError(f"precision 只支持 {sorted(_DTYPE)}，收到 {precision!r}")
+    _dt = _DTYPE[precision]
     set_seed(seed)
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
     category = category_dict[category]
     print(category)
 
-    model = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(base_model, dtype=_dt, device_map="auto")
     model.eval()
     model_device = next(model.parameters()).device
     with open(info_file, 'r') as f:

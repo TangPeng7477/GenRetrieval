@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--n-rows", type=int, default=64)
     ap.add_argument("--optim", default="adamw_torch",
                     help="adamw_torch | adamw_bnb_8bit | sgd")
+    ap.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"],
+                    help="bf16（Ampere+）| fp16（V100/Volta 必须用这个）| fp32")
     ap.add_argument("--no-model", action="store_true", help="只统计序列长度，不加载模型")
     a = ap.parse_args()
 
@@ -71,7 +73,12 @@ def main():
         print(f"[gpu  ] {torch.cuda.get_device_name(0)}  "
               f"total={total/2**30:.2f} GiB  free={free/2**30:.2f} GiB")
     t0 = time.time()
-    model = AutoModelForCausalLM.from_pretrained(a.model_dir, dtype=torch.bfloat16)
+    # 加载 dtype 与 autocast dtype 分离 —— 严格对齐 Trainer：
+    #   bf16: 权重 bf16，无 scaler
+    #   fp16: 权重 **fp32** + autocast(fp16) + GradScaler（GradScaler 不能 unscale fp16 梯度）
+    _LOAD_DT = {"bf16": torch.bfloat16, "fp16": torch.float32, "fp32": torch.float32}[a.dtype]
+    _AMP_DT = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": None}[a.dtype]
+    model = AutoModelForCausalLM.from_pretrained(a.model_dir, dtype=_LOAD_DT)
     model.resize_token_embeddings(len(tokenizer))
     model.to(dev)
     print(f"[model] 加载完成 {time.time()-t0:.1f}s")
@@ -105,37 +112,57 @@ def main():
         b = coll([ds[i % len(ds)]])
         return {k: (v.to(dev) if hasattr(v, "to") else v) for k, v in b.items()}
 
+    # ---- AMP：复现 Trainer 的 bf16 / fp16 行为 ----
+    # 🔴 fp16 必须配 GradScaler：梯度常落在 1e-8..1e-4，低于 fp16 最小正规数 6.1e-5 会下溢成 0。
+    #    Trainer 在 fp16=True 时自动挂 scaler；这里手写循环，所以要自己加，否则测出来的不是真行为。
+    _amp_dtype = _AMP_DT
+    scaler = torch.amp.GradScaler("cuda", enabled=(a.dtype == "fp16" and dev == "cuda"))
+    print(f"[amp  ] dtype={a.dtype}  autocast={'off' if _amp_dtype is None else str(_amp_dtype).split('.')[-1]}"
+          f"  GradScaler={'on' if scaler.is_enabled() else 'off'}")
+
+    def fwd(batch):
+        if _amp_dtype is None:
+            return model(**batch).loss
+        with torch.amp.autocast(device_type=("cuda" if dev == "cuda" else "cpu"), dtype=_amp_dtype):
+            return model(**batch).loss
+
+    def train_step(batch):
+        loss = fwd(batch)
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+        opt.zero_grad(set_to_none=True)
+        return loss.item()
+
     # ---- 4) 训练步：fwd + bwd + opt.step ----
     model.train()
     for i in range(2):                       # 预热（不计时）
-        out = model(**batch_of(i))
-        out.loss.backward(); opt.step(); opt.zero_grad(set_to_none=True)
+        train_step(batch_of(i))
     if dev == "cuda":
         torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
 
     t0 = time.time()
     losses = []
     for i in range(a.steps):
-        out = model(**batch_of(i + 100))
-        out.loss.backward(); opt.step(); opt.zero_grad(set_to_none=True)
-        losses.append(out.loss.item())
+        losses.append(train_step(batch_of(i + 100)))
     if dev == "cuda":
         torch.cuda.synchronize()
     t_train = (time.time() - t0) / a.steps
     peak_train = torch.cuda.max_memory_allocated() / 2**30 if dev == "cuda" else 0
     print(f"[train] {a.micro_batch} 条/步  {t_train:.3f} s/微批  峰值显存 {peak_train:.2f} GiB  "
-          f"loss {losses[0]:.3f} -> {losses[-1]:.3f}")
+          f"loss {losses[0]:.3f} -> {losses[-1]:.3f}"
+          + (f"  GradScaler scale={scaler.get_scale():.0f}" if scaler.is_enabled() else ""))
 
     # ---- 5) eval 步：纯前向（Trainer 的 per_device_eval_batch_size = micro_batch）----
     model.eval()
     with torch.no_grad():
-        out = model(**batch_of(0))           # 预热
+        fwd(batch_of(0))                     # 预热
     if dev == "cuda":
         torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
     with torch.no_grad():
         for i in range(a.eval_steps):
-            model(**batch_of(i + 200))
+            fwd(batch_of(i + 200))
     if dev == "cuda":
         torch.cuda.synchronize()
     t_eval = (time.time() - t0) / a.eval_steps
