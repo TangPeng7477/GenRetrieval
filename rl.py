@@ -67,6 +67,17 @@ def train(
     dapo: bool = False,
     gspo: bool = False,
     resume_from_checkpoint: str = None,
+    # ---- 本项目新增（与 sft.py 同口径）----
+    # torch_compile：[红线] 默认关。GRPO 每步生成长度不定 + 动态 padding，
+    #   torch.compile 会反复重编译（本仓已在 SFT 阶段实测过这个坑）。
+    torch_compile: bool = False,
+    # save 频率与上限。Trainer/GRPOConfig 语义：**< 1 = 占训练总步数的比例；>= 1 = 绝对步数**。
+    # ⚠️ 全参 GRPO 的单个 checkpoint 很大（bf16 权重 + paged_adamw_32bit 的 fp32 状态
+    #    ≈ 6 GB），原版 save_total_limit=20 会占 ~120 GB 磁盘，本仓下调。
+    save_steps: float = 0.1,
+    save_total_limit: int = 3,
+    # 优化器：paged_adamw_32bit 需 bitsandbytes（本机实测 0.48.1 可用）
+    optim: str = "paged_adamw_32bit",
 ):
     _attn_impl = "flash_attention_2"
     try:
@@ -76,7 +87,32 @@ def train(
         print("flash-attn not found, using PyTorch SDPA (memory-efficient) instead")
     set_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
-    
+
+    # ---- 前置护栏：[实测] rl.py 与 ReReTrainer 都**不做** add_tokens / resize_token_embeddings，
+    #      完全依赖 --model_path 那个目录自带的扩展 tokenizer + 已 resize 的 embedding。
+    #      指回原始基座（models/Qwen3-0.6B）会让 SID 碎成子 token、约束映射全废，而且**不报错**。
+    #      所以这里主动拦下来，别等训完才发现。
+    _tok_probe = AutoTokenizer.from_pretrained(model_path)
+    _sid_probe = _tok_probe.encode("<a_0>", add_special_tokens=False)
+    if len(_sid_probe) != 1:
+        raise ValueError(
+            f"--model_path 必须是 **SFT 训练产物**（自带扩展 tokenizer），"
+            f"但 '{model_path}' 把 '<a_0>' 切成了 {len(_sid_probe)} 个 token：{_sid_probe}。\n"
+            f"  正确用法: --model_path outputs/<SFT_EXP_ID>/final_checkpoint\n"
+            f"  指回原始基座会让 SID 碎裂、约束映射全废，且不会报错。"
+        )
+    _pfx = _tok_probe.encode("### Response:\n", add_special_tokens=False)
+    if len(_pfx) != 3:
+        raise ValueError(
+            f"'{model_path}' 的 tokenizer 把 '### Response:\\n' 切成 {len(_pfx)} 个 token "
+            f"（{_pfx}），而 LogitProcessor/ReReTrainer 硬编码 prefix_index=3。\n"
+            f"  换基座 / 换 tokenizer 时必须重测这条，并同步改 "
+            f"minionerec_trainer.py 与 LogitProcessor.py 的 prefix_index。"
+        )
+    print(f"[guard] SID tokenizer OK: '<a_0>'=1 token, '### Response:\\n'={len(_pfx)} tokens "
+          f"(prefix_index=3 成立)  vocab={len(_tok_probe)}")
+
+
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
     print(category)
     
@@ -148,16 +184,21 @@ def train(
     print(f"item_num: {item_num}")
 
     if reward_type == "sasrec":
+        if not cf_path or not os.path.exists(cf_path):
+            raise ValueError(f"reward_type='sasrec' 需要 --cf_path（SASRec 的 state_dict），"
+                             f"当前 cf_path={cf_path!r}。本仓尚无该权重，需先用根目录 sasrec.py 训练。")
         model = SASRec(32, item_num, len_seq, 0.3, device)
         model.to(device)
         model.load_state_dict(torch.load(cf_path))
         model.eval()
     if reward_type == "semantic":
+        if not ada_path or not os.path.exists(ada_path):
+            raise ValueError(f"reward_type='semantic' 需要 --ada_path（item embedding 的 pickle），"
+                             f"当前 ada_path={ada_path!r}。本仓尚无该文件。")
         with open(ada_path, "rb") as f:
             item_ada_embd = pickle.load(f)
         item_ada_embd = torch.tensor(item_ada_embd).to(llm_model.device)
-
-    print("Load item_ada_embd successfully.")
+        print(f"Load item_ada_embd successfully. shape={tuple(item_ada_embd.shape)}")
 
     ndcg_rewards = [-1.0/math.log2(i+2) for i in range(num_generations)]
     ndcg_rewards = [-elm/sum(ndcg_rewards) for elm in ndcg_rewards]
@@ -268,8 +309,8 @@ def train(
 
     training_args = GRPOConfig(output_dir=output_dir,
                                 model_init_kwargs={"attn_implementation": _attn_impl},
-                                save_steps=0.1,
-                                save_total_limit=20,
+                                save_steps=save_steps,
+                                save_total_limit=save_total_limit,
                                 eval_strategy="steps",
                                 max_completion_length=max_completion_length,
                                 num_generations=num_generations,
@@ -286,12 +327,12 @@ def train(
                                 max_grad_norm= 0.3,
                                 num_train_epochs=num_train_epochs,
                                 bf16=True,
-                                optim="paged_adamw_32bit",
+                                optim=optim,
                                 lr_scheduler_type="cosine", 
                                 save_strategy="steps",
                                 report_to=report_to,
                                 run_name=wandb_run_name,
-                                torch_compile=True,
+                                torch_compile=torch_compile,
                             )
     trainer = ReReTrainer(
         model=model_path,

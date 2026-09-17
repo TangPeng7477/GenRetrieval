@@ -321,7 +321,7 @@ python scripts/sft/verify_run0_registration.py --domain IandS   # 跑前自检�
 bash sft_run0.sh
 bash evaluate_run0.sh
 python scripts/sft/collect_eval_results.py
-# RL：待 SFT Run-0 跑通后再启动
+bash rl_run0.sh   # RL（GRPO）；前置依赖 SFT Run-0 的产物，见 §8.8
 ```
 
 > ⚠️ 不要直接 `pip install -r requirements.txt`（含 `torchrec`/`fbgemm_gpu`/`deepspeed` 等装不上或冗余项），
@@ -374,8 +374,9 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 
 | 状态 | 文件 |
 |---|---|
-| **✅ M3 在用**（2026-09-16） | `data.py`（三个 SFT Dataset 类；**已改 1 处**，修 train/eval prompt 不一致 → §8.7）· `sft.py`（**已改 5 处** → [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)）· `LogitProcessor.py`（Trie 约束解码，**只在评估端用**）· `evaluate.py`（已就位，待训练产物） |
-| ⏸ 未启用 | `sasrec.py` `rl.py` `minionerec_trainer.py` `SASRecModules_ori.py` `utility.py` `convert_dataset.py` `split.py` `merge.py` `calc.py` `data_test.py` `sinkhorn_demo.py` |
+| **✅ M3 在用**（2026-09-16） | `data.py`（三个 SFT Dataset 类；**已改 1 处**，修 train/eval prompt 不一致 → §8.7）· `sft.py`（**已改 5 处** → [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)）· `LogitProcessor.py`（Trie 约束解码，**只在评估端用**）· `evaluate.py`（已就位，待训练产物）· `calc.py`（评估指标，`evaluate_run0.sh` 实际在调） |
+| **🔧 RL 已适配**（2026-09-17） | `rl.py`（**已改 5 处** → [RL_PIPELINE §7](docs/RL_PIPELINE.md)）· `minionerec_trainer.py`（自定义 GRPO 训练器 `ReReTrainer`；`[实测]` trl 0.24.0 + transformers 4.57.1 下 import 通过）· `sasrec.py`（仅 `sasrec` 奖励需要） |
+| ⏸ 未启用 | `SASRecModules_ori.py` `utility.py` `convert_dataset.py` `split.py` `merge.py` `data_test.py` `sinkhorn_demo.py` |
 | ⏸ 上游分支 | `convert_dataset_gpr.py` `sft_gpr.py` `rl_gpr.py` `ts_rec_data.py` `ts_rec_sft.py` `ts_rec_data/` `config/zero2_opt.yaml` |
 | ⏸ 旧数据管线 | `data/amazon18_data_process.py` `data/amazon23_data_process.py` `data/process.py` |
 | ⏸ 另一条索引路线 | `rq/rqvae.py`(原版) `rq/trainer.py` `rq/utils.py` `rq/rqkmeans_constrained.py` `rq/rqkmeans_plus.py` `rq/generate_indices*.py` `rq/text2emb/` |
@@ -384,7 +385,7 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 
 > ⚠️ 🔴 根目录 `sft.sh` / `sft_3090.sh` / `evaluate.sh` / `evaluate_3090.sh` **仍是 MiniOneRec 原版**，
 > 内部数据路径写死为 `./data/Amazon/train/${CATEGORY}*11.csv` —— **本仓不存在该路径**，
-> 直接跑会 `ls` 空、`${test_file}` 为空字符串。本项目入口是 **`sft_run0.sh`**（见 §8.7）。
+> 直接跑会 `ls` 空、`${test_file}` 为空字符串。本项目入口是 **`sft_run0.sh`**（§8.7）与 **`rl_run0.sh`**（§8.8）。
 
 ### 5.3 召回基线（`baseline/`，独立包，不改动主干）
 
@@ -412,6 +413,7 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | **[docs/EVAL_PROTOCOL.md](docs/EVAL_PROTOCOL.md)** | **召回评估协议定版**：数据集划分依据 + 指标定义 + 冷/热分桶 + 报数模板 + 给 SFT/RL 的三条闸门 |
 | **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)** | **SFT 唯一入口**：提示词设计依据（文献对照）+ 四任务数据集规格 + **上游产物→训练参数映射（§3.2）** + 体检实测 + 碰撞映射口径 |
 | **[baseline/SURVEY.md](baseline/SURVEY.md)** | **召回基线文献综述**：经典/生成式 baseline 清单、公开数字（标核验等级）、能/不能横比的原因 |
+| **[docs/RL_PIPELINE.md](docs/RL_PIPELINE.md)** | **RL 唯一入口**：**数据集零新增（全部复用 SFT 产物）** + 上游→参数映射 + 约束映射实测 + 奖励可用性 + 对原版的改动清单 |
 | [baseline/README.md](baseline/README.md) | 召回基线的评估口径、复现设置与命令、踩坑记录 |
 | [baseline/RESULTS.md](baseline/RESULTS.md) | 双域基线实测结果表（自动生成，随跑随更新） |
 | — | `docs/EXPERIMENT_LOG.md`（实验流水账）为本地文档，按要求未上传 |
@@ -675,6 +677,39 @@ EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
 > 数据路径写死 `./data/Amazon/...`（**本仓不存在**），**不要直接用**。
 >
 > ⏸ M4 的语义初始化已备好码本 `info/codebook.npy` `(3,256,32)`，训练端尚未接。
+
+### 8.8 RL 入口（GRPO，2026-09-17 适配）
+
+**🔴 RL 不需要新数据集** —— 三个 Dataset 类全部直接读 SFT 阶段已落盘的同名产物
+（`train/*.csv`、`index/*.item.json`、`index/*.index.json`），prompt 在 `pre()` 里现场构造。
+详见 [docs/RL_PIPELINE.md](docs/RL_PIPELINE.md) §1。
+
+```bash
+# 前置：必须有 SFT 产物（RL 从 SFT 模型接着训；指回原始基座会静默崩，rl.py 已加护栏）
+bash sft_run0.sh                        # -> outputs/IandS-run0/final_checkpoint
+
+# RL（GRPO）：默认从 IandS-run0 接着训，reward=rule（UPGRADE_PLAN §6 的 R0 锚点）
+bash rl_run0.sh                         # -> outputs/IandS-rl0/
+SFT_EXP_ID=IandS-S0 bash rl_run0.sh     # 换 SFT 来源
+REWARD_TYPE=ranking RUN_TAG=R1 bash rl_run0.sh    # 换奖励 / 消融标签
+DOMAIN=VG bash rl_run0.sh               # 换域（需先给 category_dict 补 Video_Games）
+
+# 指标：RL 不产出 results/ 文件，训练内 HR/NDCG 走日志
+grep -E 'HR@|NDCG@|reward' logs/rl/IandS-rl0/rl.log | tail -30
+
+# 训完要对齐「全库排序」口径，仍走评估入口（final_checkpoint 自带 tokenizer）
+MODEL_PATH=outputs/IandS-rl0/final_checkpoint bash evaluate_run0.sh
+```
+
+**上游 → 参数映射**：`--train_file` / `--eval_file` / `--sid_index_path` / `--item_meta_path` /
+`--info_file` **与 SFT 阶段同名同源**；`--model_path` = `outputs/<SFT_EXP_ID>/final_checkpoint`。
+完整表见 [RL_PIPELINE §2.1](docs/RL_PIPELINE.md)。
+
+**奖励可用性**：`rule` / `ranking` / `ranking_only` 立即可用；`semantic` 缺 `--ada_path`
+（item embedding 的 pickle）、`sasrec` 缺 `--cf_path`（根 `sasrec.py` 的权重）——
+`rl.py` 已加护栏，缺了会明确报错而不是抛 `KeyError`。
+
+⚠️ 根目录 `rl.sh` / `rl_3090.sh` 同样是 MiniOneRec 原版，路径写死 `./data/Amazon/...`，**不要直接用**。
 
 ---
 
