@@ -327,6 +327,8 @@ python scripts/sft/verify_run0_registration.py --domain IandS   # 跑前自检�
 bash sft_run0.sh
 bash evaluate_run0.sh                # 尾部自动汇总到 docs/SFT_EVAL_RESULTS.md
 bash rl_run0.sh   # RL（GRPO）；前置依赖 SFT Run-0 的产物，见 §8.8
+# beam 宽度扫描（只报 beam_ceiling，定位瓶颈在解码宽度还是排序质量）
+DRY_RUN=1 MODEL_PATH=outputs/<EXP_ID>/final_checkpoint bash beam_sweep.sh
 ```
 
 > ⚠️ 不要直接 `pip install -r requirements.txt`（含 `torchrec`/`fbgemm_gpu`/`deepspeed` 等装不上或冗余项），

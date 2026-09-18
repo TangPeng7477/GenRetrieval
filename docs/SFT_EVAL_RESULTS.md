@@ -1,6 +1,6 @@
 # SFT 评估结果表
 
-> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **3** 条记录，生成于 2026-09-19T02:22:49。**请勿手改。**
+> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **3** 条记录，生成于 2026-09-19T02:38:31。**请勿手改。**
 >
 > 数据源：`results/sft/<EXP_ID>/eval_*.{meta,metrics}.json`（该目录被 `.gitignore` 忽略，明细不入仓；**只有本表入仓**，供跨会话 / 跨环境对照）。
 

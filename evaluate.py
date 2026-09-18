@@ -47,7 +47,12 @@ def main(
     K: int = 0,
     seed: int = 42,
     length_penalty: float=0.0,
-    max_new_tokens: int = 256,
+    # 🔴 [本项目 2026-09-19 提效] 默认 256 -> 8。
+    #    依据：目标 SID 恒为 3 个 token + 1 个 EOS（Trie 在 sid_vocab 里把 EOS 追加为第 4 步），
+    #    实测 2000 条生成结果长度分布 16~21 字符（= 3 个 SID token），**无一例外**。
+    #    原值 256 意味着每条序列白跑 252 步 ⟹ 解码耗时虚高约 60 倍。
+    #    ⚠️ 若将来改 SID 层数或放开"最多 N 个候选 SID"的多目标生成，必须同步调大这个值。
+    max_new_tokens: int = 8,
     num_beams: int = 50,
     sid_vocab_path: str = "",   # [本项目新增] 非空则现场注册 SID 词表（dry-run / 未训练基座用）
     max_samples: int = 0,       # [本项目新增] 0=全部；>0 只随机取 N 条（dry-run 用，显著提速）
@@ -66,6 +71,9 @@ def main(
 
     # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
     precision: str = "bf16",
+
+    # attention 后端：[本项目 2026-09-19 提效] sdpa（默认，零依赖）| eager | flash_attention_2
+    attn_impl: str = "sdpa",
 ):
     random.seed(seed)
 
@@ -94,7 +102,15 @@ def main(
         print("[解码] ⚠️ 束采样下结果依赖随机种子，同模型重跑会有抖动；"
               "与 do_sample=False 的结果不可直接横比。")
 
-    model = AutoModelForCausalLM.from_pretrained(base_model, dtype=_dt, device_map="auto")
+    # [本项目 2026-09-19 提效] 显式指定 attention 后端。
+    #   sdpa = PyTorch 原生 scaled_dot_product_attention，在 Ada（4090D, sm_89）上会自动走
+    #   FlashAttention-2 内核，**零额外依赖**（不需要 flash_attn 包）。
+    #   ⚠️ 若环境装了 flash_attn 且想用，传 ATTN_IMPL=flash_attention_2。
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model, dtype=_dt, device_map="auto",
+        attn_implementation=attn_impl,
+    )
+    print(f"[模型] dtype={precision}  attn={attn_impl}  device={model.device}")
     model.eval()
     model_device = next(model.parameters()).device
     with open(info_file, 'r') as f:
@@ -214,10 +230,14 @@ def main(
     def evaluate(
             encodings,
             num_beams=10,
-            max_new_tokens=64,
+            max_new_tokens=8,
             length_penalty=1.0,
             **kwargs,
     ):
+        # [本项目 2026-09-19 提效] padding 长度按**本批**最大值算，不再用全局 maxLen。
+        #   原实现把所有批 pad 到全数据集最长样本的长度 ⟹ 每个 batch 都在算大量 pad token
+        #   （decode 阶段 pad 位置也要过 attention）。按批 pad 后总 FLOPs 显著下降，
+        #   且**不改变任何一条样本的生成结果**（左 padding + attention_mask 语义等价）。
         maxLen = max([len(_["input_ids"]) for _ in encodings])
 
         padding_encodings = {"input_ids": []}
@@ -294,11 +314,25 @@ def main(
         new_encodings.append(encodings[i * batch_size: (i + 1) * batch_size])
 
     
+    # [本项目 2026-09-19 提效] 打印解码规模，便于估时间/显存。
+    _nseq = batch_size * num_beams
+    print(f"[解码] 样本={len(encodings)}  批={batch_size}  beam={num_beams}  "
+          f"=> 每批 {_nseq} 条序列  max_new_tokens={max_new_tokens}  批数={BLOCK}")
+    if _nseq > 160:
+        print(f"  ⚠️ batch×beam={_nseq} 偏大，若 OOM 请降 BATCH_SIZE（别降 NUM_BEAMS —— 它是 HR@K 硬上限）")
+
+    import time as _time
+    _t0 = _time.time()
     for idx, encodings in enumerate(tqdm(new_encodings)):
         # Use standard evaluation
         output = evaluate(encodings, max_new_tokens=max_new_tokens, num_beams=num_beams, length_penalty=length_penalty)
         
         outputs = outputs + output
+    _el = _time.time() - _t0
+    print(f"[解码] 完成 {BLOCK} 批，耗时 {_el:.1f}s（{_el/max(BLOCK,1)*1000:.0f} ms/批，"
+          f"{_el*1000/max(len(encodings),1):.0f} ms/样本）")
+    if torch.cuda.is_available():
+        print(f"[解码] 峰值显存 {torch.cuda.max_memory_allocated()/1024**3:.2f} GB")
        
     for i, test in enumerate(test_data):
         test["predict"] = outputs[i]

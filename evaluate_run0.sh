@@ -52,10 +52,16 @@ MODEL_PATH="${MODEL_PATH:-outputs/${EXP_ID}/final_checkpoint}"
 #    （beam 宽度 = HR@K 的硬上限，压它等于自降天花板）。
 BATCH_SIZE="${BATCH_SIZE:-8}"
 NUM_BEAMS="${NUM_BEAMS:-50}"            # 生成式 HR@K 的硬上限 = beam 宽度，别调小
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-16}"  # 目标只有 3 SID + \n + EOS，16 足够
+# [本项目 2026-09-19 提效] 16 -> 8。目标恒为 3 个 SID token + EOS（第 4 步），
+#   实测 2000 条生成长度全落在 16~21 字符（= 3 个 SID），无一例外 ⟹ 8 有 2 倍余量。
+#   ⚠️ 改 SID 层数 / 放开多候选生成时必须同步调大。
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-8}"
 LENGTH_PENALTY="${LENGTH_PENALTY:-0.0}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"         # 0=全部；>0 随机取 N 条（dry-run 提速）
 SID_VOCAB_PATH="${SID_VOCAB_PATH:-}"    # 仅 dry-run：非空则评估端现场注册词表
+# [本项目 2026-09-19 提效] attention 后端。sdpa = PyTorch 原生，在 4090D（Ada, sm_89）上
+#   自动走 FlashAttention-2 内核，**零额外依赖**（无需 flash_attn 包）。一般不用改。
+ATTN_IMPL="${ATTN_IMPL:-sdpa}"
 
 # ---------------- 解码采样（口径开关，2026-09-19 新增） ----------------
 # 🔴 背景：evaluate.py 原来**不传** do_sample ⟹ HF 会用基座 generation_config.json 的
@@ -164,6 +170,7 @@ echo " Model      : ${MODEL_PATH}"
 echo " Test file  : ${TEST_FILE}"
 echo " Info file  : ${INFO_FILE}"
 echo " Beams      : ${NUM_BEAMS}   Batch: ${BATCH_SIZE}   max_new_tokens: ${MAX_NEW_TOKENS}"
+echo " Attn       : ${ATTN_IMPL}   (batch×beam = $((BATCH_SIZE * NUM_BEAMS)) 条序列/批)"
 echo " Samples    : ${MAX_SAMPLES}   (0 = 全部)"
 # 解码模式回显：一眼看出这次跑的是纯束搜索还是束采样
 if [ "${DO_SAMPLE}" = "True" ]; then
@@ -193,6 +200,7 @@ T_EVAL_0="$(date +%s)"
   --do_sample "${DO_SAMPLE}" \
   --temperature "${TEMPERATURE}" \
   --top_p "${TOP_P}" \
+  --attn_impl "${ATTN_IMPL}" \
   2>&1 | tee "${EVAL_LOG}"
 T_EVAL_1="$(date +%s)"
 EVAL_SECONDS=$((T_EVAL_1 - T_EVAL_0))
@@ -224,6 +232,7 @@ echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SEC
   --set "do_sample=${DO_SAMPLE}" \
   --set "temperature=${TEMPERATURE}" \
   --set "top_p=${TOP_P}" \
+  --set "attn_impl=${ATTN_IMPL}" \
   --set "max_new_tokens=${MAX_NEW_TOKENS}" \
   --set "length_penalty=${LENGTH_PENALTY}" \
   --set "max_samples=${MAX_SAMPLES}" \

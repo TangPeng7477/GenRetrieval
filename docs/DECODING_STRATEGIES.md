@@ -349,17 +349,64 @@ IandS 域，来自 `data/Amazon23/IandS/sft/info/sid2items.json`：
 
 ### 5.3 待办清单（按性价比排序）
 
-1. **补记 meta**（成本最低）：现有 meta 只记 `num_beams` / `prompt_format`，
-   **没记 `do_sample` / `temperature`** ⟹ 跨版本比 HR 时无法确认口径。
-2. **beam 扫描**（终结争论）：
-   `MAX_SAMPLES=1000` 扫 `NUM_BEAMS ∈ {20, 50, 100, 256}`，**只报 `beam_ceiling`**。
-   ⚠️ `EXP_ID` 要分开命名（如 `-b20`/`-b50`），否则结果互相覆盖。
-   ⚠️ 显存按 `batch × beam` 算，beam=256 时 batch 需压到 1~2。
+1. ~~**补记 meta**~~ ✅ **已完成（2026-09-19）**：meta 现记
+   `do_sample` / `temperature` / `top_p` / `attn_impl`，汇总表备注列会渲染采样口径。
+2. ~~**beam 扫描**~~ ✅ **已就绪（2026-09-19）**：`beam_sweep.sh` 已落地，
+   逐档独立 `EXP_ID`（`<base>-b<N>`）+ batch 自适应 + **只算 `beam_ceiling`** + 汇总表。
+   用法见 §5.4。⚠️ 仍需**在云端 hs1 产物上实跑**才能拿到真数字。
 3. ~~**采样开关消融**~~ ✅ **已完成（2026-09-19）**：开关落地且**默认已关**，
    见 §2.4 与 §5.2。剩下要做的只是**在有预算时跑一次 `DO_SAMPLE=True` 对照**，
    与"基座切换"这个变量**分开记账**。
 
-### 5.4 判据纪律
+### 5.4 推理提效（2026-09-19，云端 4090D）
+
+背景：评估端原配置在 4090D 上严重浪费。四个已落地的改动，**都不改变生成结果**：
+
+| # | 改动 | 原值 | 新值 | 依据 |
+|---|---|---|---|---|
+| ① | `max_new_tokens` | **256** | **8** | 目标恒为 3 个 SID token + EOS（Trie 第 4 步只放 EOS）`[实测]`：2000 条生成长度全在 16~21 字符（=3 个 SID），**无一例外**。原值白跑 252 步 ⟹ **解码耗时虚高约 60 倍** |
+| ② | padding | 全局 maxLen | **按批 maxLen** | 原实现把所有批 pad 到全数据集最长样本 ⟹ 每批都在算大量 pad token。左 padding + `attention_mask` 语义等价 ⟹ **不改任何样本的生成结果** |
+| ③ | attention 后端 | 隐式默认 | **`sdpa`**（显式） | PyTorch 原生 SDPA 在 Ada（4090D, sm_89）自动走 FlashAttention-2 内核，**零额外依赖**（无需 `flash_attn` 包）。可用 `ATTN_IMPL=eager` 回退对照 |
+| ④ | 批大小 | 硬编码 8 | **`beam_sweep.sh` 自适应** | 显存 ≈ `batch × beam`。实测基线：0.6B + batch4×beam20=80 序列 ≈ **2.6 GB** ⟹ 约 32 MB/序列 ⟹ 4090D 24GB 可用 512 序列/批 |
+
+**新增诊断输出**（每次评估都会打，便于估时间/垫显存）：
+
+```
+[模型] dtype=bf16  attn=sdpa  device=cuda:0
+[解码] 样本=50984  批=10  beam=50  => 每批 500 条序列  max_new_tokens=8  批数=5099
+[解码] 完成 5099 批，耗时 ...s（... ms/批，... ms/样本）
+[解码] 峰值显存 X.XX GB
+```
+
+**beam 扫描用法**（`beam_sweep.sh`）：
+
+```bash
+# ① 先预检（不跑，只确认 EXP_ID / 路径 / 已有结果）
+DRY_RUN=1 MODEL_PATH=outputs/<HS1_EXP_ID>/final_checkpoint bash beam_sweep.sh
+
+# ② 小样本探路（1000 条，4 档 beam，拿到耗时与 ceiling 趋势）
+MAX_SAMPLES=1000 MODEL_PATH=outputs/<HS1_EXP_ID>/final_checkpoint bash beam_sweep.sh
+
+# ③ 全量正式扫
+MODEL_PATH=outputs/<HS1_EXP_ID>/final_checkpoint bash beam_sweep.sh
+
+# 自定义 beam 档位 / 数据域
+BEAMS="20 50 100" DOMAIN=VG MODEL_PATH=... bash beam_sweep.sh
+```
+
+设计要点：
+- **逐档独立 `EXP_ID`**（`<base>-b<N>`）：否则 `results/sft/<EXP_ID>/eval_*.json` 互相覆盖，扫完只剩最后一档。
+- **batch 自适应**：`MAX_SEQ_PER_BATCH=512`（默认），`batch = clamp(512/beam, 1, 32)`。
+  🔴 **只压 batch，绝不压 beam** —— beam 宽度是 HR@K / beam_ceiling 的硬上限。
+- **只算 `beam_ceiling`**：`calc.py` 不输出这个指标，脚本现场按
+  「目标是否出现在 `predict` 列表里（**与名次无关**）」计算。
+- 失败不中断：单档失败记 `FAIL` 后继续，最后统一汇总。
+
+⚠️ **读法纪律**：本扫描**不产出可直接引用的成绩**。换 beam 会改变 HR@K 的硬上限，
+与既有 baseline 数字**不可横比**（见 `EVAL_PROTOCOL`）。它只回答一个问题：
+**瓶颈在解码宽度还是在排序质量。**
+
+### 5.5 判据纪律
 
 🔴 **评估生成式方法一律用 `beam_ceiling`（目标是否出现在 beam 里），不要只看 HR。**
 `baseline/generative/sid_gr.py:19` 的定义就是干这个的：
