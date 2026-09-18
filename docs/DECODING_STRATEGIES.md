@@ -127,9 +127,9 @@ else:                                    # num_beams > 1
 | `num_beams=1, do_sample=False` | greedy |
 | `num_beams=1, do_sample=True` | sample |
 | `num_beams=50, do_sample=False` | **beam search** |
-| `num_beams=50, do_sample=True` | **beam sample** ← 本项目现状 |
+| `num_beams=50, do_sample=True` | **beam sample** ← 2026-09-19 之前的隐式现状 |
 
-### 2.3 本项目当前的真实处境
+### 2.3 本项目曾经的处境（2026-09-19 之前的隐式口径）
 
 `evaluate.py:207-217` 构造 `GenerationConfig` 时**没有传 `do_sample`**：
 
@@ -152,8 +152,40 @@ generation_config = GenerationConfig(
 本项目 `models/Qwen3-0.6B/generation_config.json` 的
 `do_sample: true` / `temperature: 0.6` **生效**。
 
-⟹ **实际执行的是 `BEAM_SAMPLE`（束采样），不是纯束搜索。**
+⟹ 那段时期**实际执行的是 `BEAM_SAMPLE`（束采样），不是纯束搜索。**
 （完整溯源见 `SFT_PIPELINE §3.5.4`。）
+
+### 2.4 `[实测]` 采样开关（2026-09-19 已实现，默认**关**）
+
+⚠️ **注意下文所有"现状 / 隐式"表述均指改动之前**；现在口径已显式化。
+
+**坑（必须知道，否则开关是假的）**：直接把 `do_sample=False` 传给 `GenerationConfig`
+**不生效** —— HF 的合并规则是
+`if custom_gen_config_value == global_default_value and model_gen_config_value != global_default_value: 取模型值`，
+而 `False` 恰好 == 全局默认值 ⟹ **传 `False` 等于没传**，照样被基座的 `true` 覆盖。
+
+**解法**：`model.generate(..., use_model_defaults=False)` —— 该参数禁用整个回填分支，
+让显式参数真正生效。三档实测：
+
+| 传入 | 生效 `get_generation_mode()` | 是否符合预期 |
+|---|---|---|
+| `do_sample=False` | `BEAM_SEARCH` | ✅ 确定性 |
+| `do_sample=True, T=0.6, p=0.9` | `BEAM_SAMPLE` | ✅ 随机 |
+| 不传（旧行为） | `BEAM_SAMPLE`（被基座覆盖） | ✅ 复现历史 |
+
+**接口**（`evaluate_run0.sh` 三个环境变量，全可调）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DO_SAMPLE` | `False` | 只接受字面 `True` / `False`（大小写敏感，其它值直接报错退出） |
+| `TEMPERATURE` | `1.0` | 仅在 `DO_SAMPLE=True` 时起作用 |
+| `TOP_P` | `1.0` | `1.0` = 不截断（HF 语义：`>=1` 视为不启用核采样） |
+
+**可追溯性三件套**：① 产物文件名加 `_samp` 后缀（`..._beam5_samp_n20.json`）⟹
+与不采样的结果**永不互相覆盖**；② 启动日志回显
+`[解码] mode=... do_sample=... temperature=... top_p=...`；③ meta 记 `do_sample`/`temperature`/`top_p`，
+汇总表备注列渲染成 `束采样(T=0.6,p=0.9)`；**旧记录**（meta 无 `do_sample`）显示
+`采样:隐式(旧记录)` ⟹ **追溯缺口已闭合**。
 
 ---
 
@@ -296,18 +328,24 @@ IandS 域，来自 `data/Amazon23/IandS/sft/info/sid2items.json`：
 
 ⟹ 所以"**采样归推理，训练归损失与数据**"，两者不可混谈。
 
-### 5.2 当前建议：先不动采样，但必须记账
+### 5.2 参数现状（2026-09-19 已显式化）
 
 | 参数 | 现值 | 来源 | 评价 |
 |---|---|---|---|
 | `num_beams` | 50 | `evaluate_run0.sh:54` | 与 MiniOneRec 原版一致，保留 |
-| `do_sample` | `true` | **继承自基座** | 保留 —— Qwen2.5 与 Qwen3 基座**都为 true**，关掉会引入新旧不可比变量 |
-| `temperature` | `0.6` | **继承自基座** | 方向正确（< 1，抑制乱码） |
-| `top_k` / `top_p` | `None` | `evaluate.py:214-215` 显式 | 未截断；可考虑加 `top_p≈0.9` 收窄 |
+| `do_sample` | **`False`** | **`evaluate.py` 显式**（不再继承基座） | ✅ 默认**纯束搜索**：确定性、可复现 |
+| `temperature` | `1.0` | 同上（默认关闭时无意义） | 仅 `DO_SAMPLE=True` 时生效 |
+| `top_k` / `top_p` | `None` / `None` | `evaluate.py` 显式 | 仍不截断；`DO_SAMPLE=True` 时建议配 `TOP_P≈0.9` 收窄 |
 
-**理由**：`do_sample=true` 是**两个基座的共同默认**，MiniOneRec 原版也在采样。
-**关掉它 = 引入一个新旧不可比的变量**，而当前首要任务是跑通硬串行三阶段、
-拿到一套内部一致的数。
+**为什么默认关掉采样**（与 §5.2 旧版建议相反，理由已更新）：
+
+1. **可复现性**：纯束搜索换 seed 结果不变（8 词表可控实验 `[实测]`）；束采样换 seed 全变。
+   ⟹ 消融实验里"差异到底来自模型还是来自采样噪声"这个混淆项被消除。
+2. **旧口径的两个基座都为 `true`**，所以关掉确实**引入了变量** —— 但处理方式不是"不动它"，
+   而是**显式记账**：`hs1` 及之前的结果在汇总表里标注 `采样:隐式(旧记录)`，
+   `hs2` 之后标注 `束采样(...)` 或（关闭时）无标签 ⟹ **跨版本比 HR 前先看备注列的采样口径**。
+3. **需要采样时一行切换**：`DO_SAMPLE=True TEMPERATURE=0.6 TOP_P=0.9 bash evaluate_run0.sh`。
+   ⚠️ 产物文件名会自动带 `_samp` 后缀，**不会覆盖**确定性结果 ⟹ 两套可并存对照。
 
 ### 5.3 待办清单（按性价比排序）
 
@@ -317,8 +355,9 @@ IandS 域，来自 `data/Amazon23/IandS/sft/info/sid2items.json`：
    `MAX_SAMPLES=1000` 扫 `NUM_BEAMS ∈ {20, 50, 100, 256}`，**只报 `beam_ceiling`**。
    ⚠️ `EXP_ID` 要分开命名（如 `-b20`/`-b50`），否则结果互相覆盖。
    ⚠️ 显存按 `batch × beam` 算，beam=256 时 batch 需压到 1~2。
-3. **采样开关消融**（不插在当前链路）：`do_sample=False` 两套都跑，
-   作为独立消融，与"基座切换"这个变量**分开记账**。
+3. ~~**采样开关消融**~~ ✅ **已完成（2026-09-19）**：开关落地且**默认已关**，
+   见 §2.4 与 §5.2。剩下要做的只是**在有预算时跑一次 `DO_SAMPLE=True` 对照**，
+   与"基座切换"这个变量**分开记账**。
 
 ### 5.4 判据纪律
 
@@ -351,7 +390,7 @@ prompt ──▶ [第1层 a]  ──▶ [第2层 b]  ──▶ [第3层 c]
 ```
 方案            代价              收益                    建议
 ─────────────────────────────────────────────────────────────
-① 关采样        改 1 行           可复现、KV 复用率回升    ⏸ 等 baseline 全跑完再做
+① 关采样        ✅ 已完成         可复现、KV 复用率回升    ✅ 2026-09-19 落地，默认关
 ② 加宽 beam     显存×5、耗时×5    ★ 唯一能抬 ceiling      ▶ 当前最该先测
 ③ 分层采样      改解码接口        覆盖分支数 50→256+       ⏸ 确认②是瓶颈后再动
 ```
@@ -361,8 +400,9 @@ prompt ──▶ [第1层 a]  ──▶ [第2层 b]  ──▶ [第3层 c]
 ```
 SID 数据 ──▶ SFT 训练 ──▶ 训练产物 ──▶ 评估/推理 ──▶ HR/NDCG
               (teacher forcing)         (逐token解码)
-              无 beam / 无采样           beam=50 + do_sample=true
-                                          ↑ 采样只在这里起作用
+              无 beam / 无采样           beam=50 + do_sample=False（默认）
+                                          ↑ 采样只在这里起作用；
+                                            需消融时 DO_SAMPLE=True
 ```
 
 ---

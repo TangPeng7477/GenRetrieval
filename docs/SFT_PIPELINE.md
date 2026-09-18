@@ -575,10 +575,11 @@ batch 加不上去（换页）、beam 是 `HR@K` 硬上限不能压、评估协�
 
 **三个连带结论**：
 
-1. **`temperature` 是死参数**：`evaluate.py:7` import 了 `TemperatureLogitsWarper`、原版
-   `evaluate.sh` 也传了 `--temperature 1.0`，但 `main()` 签名里**没有** `temperature` ⟹ fire
-   吃掉后丢弃，**从未进入解码**。真正生效的温度 0.6 来自基座文件。
-   ⚠️ 也就是说**"改 `--temperature` 能改变评估结果"是错的**。
+1. ~~**`temperature` 是死参数**~~ ✅ **已于 2026-09-19 修复**：原先 `evaluate.py:7` import 了
+   `TemperatureLogitsWarper`、原版 `evaluate.sh` 也传了 `--temperature 1.0`，但 `main()` 签名里
+   **没有** `temperature` ⟹ fire 吃掉后丢弃，**从未进入解码**（那段时期真正生效的温度 0.6 来自基座文件，
+   所以**"改 `--temperature` 能改变评估结果"在当时是错的**）。现在 `main()` 已有
+   `temperature: float = 1.0` 形参并显式进 `GenerationConfig` ⟹ **该参数已真正可调**。
 2. **`top_k`/`top_p` 传 `None` 是有效的**（≠ 全局默认），所以**没有**被模型值 20/0.95 覆盖
    ⟹ 采样在**无 top-k/top-p 截断**的全词表上做。这是当前唯一被显式关掉的采样旋钮。
 3. **不可复现**：`set_seed(42)` 只保证 `torch` 随机种子，位置在采样路径上不足以完全固定输出
@@ -595,11 +596,23 @@ batch 加不上去（换页）、beam 是 `HR@K` 硬上限不能压、评估协�
   **单卡配置其实完全相同**（`--batch_size 8 --num_beams 50 --max_new_tokens 256`）。
   ⟹ 不是"它更快"，是"它有 8 张卡"。
 
-🔴 **红线**：**评估端的 `do_sample` 由基座 `generation_config.json` 决定，不由本仓代码决定。**
-- 换基座 ⟹ **必须重新确认**该文件的 `do_sample` / `temperature`，否则口径静默漂移。
-- 想改口径 ⟹ 在 `evaluate.py:207` 的构造里**显式**写 `do_sample=` / `temperature=`，
-  **不要**去改基座文件（那会污染训练侧）；且改了**必须两套都跑**并把值记进 meta
-  （现有 meta 只记了 `num_beams` / `prompt_format`，**没记 `do_sample`** ⟹ 跨版本比 HR 前先回溯基座）。
+🔴 **红线（2026-09-19 更新：口径已显式化，不再依赖基座）**：
+**评估端的解码口径现在由本仓代码决定**（`evaluate.py` 的 `do_sample` / `temperature` / `top_p` 三形参），
+不再继承基座 `generation_config.json`。要点：
+
+- **默认 `do_sample=False`** ⟹ 纯 `BEAM_SEARCH`、确定性、可复现；需要采样消融时
+  `DO_SAMPLE=True TEMPERATURE=0.6 TOP_P=0.9 bash evaluate_run0.sh`。
+- 🔴 **`use_model_defaults=False` 是开关生效的前提**：HF 的合并规则是
+  `传入值 == 全局默认值 且 模型值 != 全局默认值 ⟹ 取模型值`，而 `do_sample=False` 恰好 == 全局默认值
+  ⟹ **只传 `do_sample=False` 等于没传**，会被基座的 `true` 悄悄覆盖。必须同时给
+  `model.generate(..., use_model_defaults=False)`（`evaluate.py` 已加）。**去掉这行开关立刻失效。**
+- ⚠️ **换基座仍要重新确认**基座文件的 `do_sample` / `temperature`（它决定"不传时"的行为），
+  并重跑 `probe` 那三档验证。
+- ✅ **meta 现在记 `do_sample` / `temperature` / `top_p`**，产物文件名带 `_samp` 后缀，
+  汇总表备注列会渲染 `束采样(T=...,p=...)` 或 `采样:隐式(旧记录)` ⟹ 跨版本比 HR 前先看这一列。
+  原红线里"**没记 `do_sample`** ⟹ 跨版本比 HR 前先回溯基座"的缺口**已闭合**。
+- ⚠️ **不可混比**：2026-09-19 之前跑的结果（含 `hs1`）是在**隐式 `do_sample=True, temp=0.6`** 下得到的，
+  与新默认口径的 HR **不可直接横比**（汇总表已用 `采样:隐式(旧记录)` 标出）。
 - ⚠️ 训练产物 `final_checkpoint/` 的 `generation_config.json` 是
   `save_pretrained` 从基座**继承**写的（`sft.py:536/539`）⟹ 它反映的是**基座**设置，
   不是训练引入的。**别误读成"训练把采样打开了"。**

@@ -52,6 +52,18 @@ def main(
     sid_vocab_path: str = "",   # [本项目新增] 非空则现场注册 SID 词表（dry-run / 未训练基座用）
     max_samples: int = 0,       # [本项目新增] 0=全部；>0 只随机取 N 条（dry-run 用，显著提速）
 
+    # ---- 解码采样（[本项目新增] 原本完全靠继承基座，不可控也不可见）----
+    # 🔴 背景：本函数构造 GenerationConfig 时若**不传** do_sample，generate() 内部的
+    #    `_prepare_generation_config` 会用**基座 generation_config.json 的非默认值**填充它。
+    #    Qwen3-0.6B / Qwen2.5-0.5B 两个基座都写着 `do_sample: true` ⟹ 原来**一直在采样**
+    #    （beam sampling，不是纯 beam search），且本仓代码里看不到这个事实。
+    #    实测溯源见 docs/DECODING_STRATEGIES.md §2.2/§2.3 与 docs/SFT_PIPELINE.md §3.5.4。
+    # ⟹ 现在**显式**传参：默认关闭采样（确定性 beam search，可复现），
+    #    需要采样消融时显式 DO_SAMPLE=True + TEMPERATURE / TOP_P。
+    do_sample: bool = False,
+    temperature: float = 1.0,
+    top_p: float = 1.0,         # 1.0 = 不截断（HF 语义：>=1 视为不启用核采样）
+
     # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
     precision: str = "bf16",
 ):
@@ -68,6 +80,19 @@ def main(
     category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
     category = category_dict[category]
     print(category)
+
+    # ---- 解码口径显式回显（[本项目新增]）----
+    # 🔴 这条日志是"口径可追溯"的一部分：采样与否会改变 HR（束采样引入随机性），
+    #    以前它由基座静默决定、日志里查不到，跨版本比数时无从对账。
+    _mode = "BEAM_SAMPLE（束采样，含随机性）" if (do_sample and num_beams > 1) else \
+            "SAMPLE（纯采样）" if do_sample else \
+            "BEAM_SEARCH（纯束搜索，确定性）" if num_beams > 1 else "GREEDY（贪心）"
+    print(f"[解码] mode={_mode}")
+    print(f"[解码] num_beams={num_beams}  do_sample={do_sample}  "
+          f"temperature={temperature}  top_p={top_p if top_p < 1.0 else 'None(不截断)'}")
+    if do_sample and num_beams > 1:
+        print("[解码] ⚠️ 束采样下结果依赖随机种子，同模型重跑会有抖动；"
+              "与 do_sample=False 的结果不可直接横比。")
 
     model = AutoModelForCausalLM.from_pretrained(base_model, dtype=_dt, device_map="auto")
     model.eval()
@@ -212,7 +237,13 @@ def main(
             eos_token_id = model.config.eos_token_id,
             max_new_tokens = max_new_tokens,
             top_k=None,
-            top_p=None,
+            # [本项目新增] 显式固定"是否采样"这条口径，不再让它静默继承基座。
+            #   只传这两个值即可决定模式：do_sample=False -> BEAM_SEARCH；
+            #   do_sample=True -> BEAM_SAMPLE（HF 的 get_generation_mode 判定）。
+            #   ⚠️ temperature / top_p 只在 do_sample=True 时才有意义，否则 HF 会忽略。
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=(top_p if top_p < 1.0 else None),
             **kwargs
         )
         
@@ -232,6 +263,13 @@ def main(
                 return_dict_in_generate=True,
                 output_scores=True,
                 logits_processor=logits_processor,
+                # 🔴 [本项目新增] 必须显式关掉"用模型默认值回填"，否则上面的
+                #    do_sample=False 会被基座 generation_config.json 的 true 覆盖掉 ——
+                #    因为 HF 的合并规则是「传入值 == 全局默认值 且 模型值 != 全局默认值 ⟹ 取模型值」，
+                #    而 False 恰好 == 全局默认值 ⟹ **传 False 等于没传**（实测已验证）。
+                #    use_model_defaults=False 会禁用整个回填逻辑，让显式参数真正生效。
+                #    行为细节见 transformers/generation/utils.py:_prepare_generation_config。
+                use_model_defaults=False,
             )
        
         batched_completions = generation_output.sequences[:, maxLen:]

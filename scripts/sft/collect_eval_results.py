@@ -99,6 +99,14 @@ def note_of(meta):
         tags.append("非训练产物")
     if meta.get("max_samples"):
         tags.append("抽样")
+    # 解码口径：do_sample 缺失（None）表示该次跑在本次改动之前，
+    # 当时是**静默继承基座**（Qwen3/Qwen2.5 均为 true）⟹ 实际是束采样。
+    ds = meta.get("do_sample")
+    if ds is None:
+        tags.append("采样:隐式(旧记录)")
+    elif str(ds).lower() in ("true", "1", "yes"):
+        tp = meta.get("top_p")
+        tags.append(f"束采样(T={meta.get('temperature', '?')},p={tp if tp is not None else '?'})")
     return " / ".join(tags) if tags else "—"
 
 

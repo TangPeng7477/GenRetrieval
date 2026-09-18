@@ -57,13 +57,40 @@ LENGTH_PENALTY="${LENGTH_PENALTY:-0.0}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"         # 0=全部；>0 随机取 N 条（dry-run 提速）
 SID_VOCAB_PATH="${SID_VOCAB_PATH:-}"    # 仅 dry-run：非空则评估端现场注册词表
 
+# ---------------- 解码采样（口径开关，2026-09-19 新增） ----------------
+# 🔴 背景：evaluate.py 原来**不传** do_sample ⟹ HF 会用基座 generation_config.json 的
+#    `do_sample: true` 回填 ⟹ **一直在跑束采样（BEAM_SAMPLE）**，而本仓代码里看不见。
+#    Qwen2.5-0.5B 与 Qwen3-0.6B 两个基座都写着 true ⟹ MiniOneRec 原版同样在采样。
+#    溯源见 docs/DECODING_STRATEGIES.md §2.2/§2.3、docs/SFT_PIPELINE.md §3.5.4。
+# ⟹ 现在改成**显式可控**：
+#    DO_SAMPLE=False（默认）= 纯束搜索，确定性、可复现 —— 基准口径。
+#    DO_SAMPLE=True          = 束采样，需同时给 TEMPERATURE / TOP_P 做消融。
+# ⚠️ 与 hs1 那次已跑的评估（跑在"隐式 do_sample=True, temp=0.6"下）**不可直接横比**，
+#    重跑后 meta 里的 do_sample 字段会如实区分。详见 §解码口径注意事项。
+DO_SAMPLE="${DO_SAMPLE:-False}"
+TEMPERATURE="${TEMPERATURE:-1.0}"
+TOP_P="${TOP_P:-1.0}"
+# 🔴 真值陷阱防护（与 sft_run0.sh 的 EVAL_BY_EPOCH 同款）：
+#    fire 把 "True"/"False" 解析成 Python bool；但若传成 TRUE/1/yes 之类，
+#    Python 里非空字符串恒为真 ⟹ 会静默走采样分支，与意图相反且不报错。当场拦掉。
+case "${DO_SAMPLE}" in
+  True|False) ;;
+  *) echo "[ERROR] DO_SAMPLE 只接受 True / False，收到 '${DO_SAMPLE}'"; exit 1 ;;
+esac
+
 TEST_FILE="${SFT_DIR}/test/${DOMAIN}_5_test.csv"
 INFO_FILE="${SFT_DIR}/info/${DOMAIN}.item_info.txt"
 
 # ---------------- 落点（命名规范见文件头） ----------------
 SAMPLE_TAG=""
 if [ "${MAX_SAMPLES}" != "0" ]; then SAMPLE_TAG="_n${MAX_SAMPLES}"; fi
-EVAL_TAG="beam${NUM_BEAMS}${SAMPLE_TAG}"
+# 采样消融用后缀区分，否则会互相覆盖（do_sample=False 是默认，不加后缀保持旧路径可读）
+if [ "${DO_SAMPLE}" = "True" ]; then
+  SAMP_TAG="_samp"
+else
+  SAMP_TAG=""
+fi
+EVAL_TAG="beam${NUM_BEAMS}${SAMP_TAG}${SAMPLE_TAG}"
 OUT_DIR="results/sft/${EXP_ID}"
 LOG_DIR="logs/sft/${EXP_ID}"
 RESULT_JSON="${OUT_DIR}/eval_${DOMAIN}_${EVAL_TAG}.json"
@@ -138,6 +165,13 @@ echo " Test file  : ${TEST_FILE}"
 echo " Info file  : ${INFO_FILE}"
 echo " Beams      : ${NUM_BEAMS}   Batch: ${BATCH_SIZE}   max_new_tokens: ${MAX_NEW_TOKENS}"
 echo " Samples    : ${MAX_SAMPLES}   (0 = 全部)"
+# 解码模式回显：一眼看出这次跑的是纯束搜索还是束采样
+if [ "${DO_SAMPLE}" = "True" ]; then
+  echo " Decoding   : BEAM_SAMPLE（束采样）  do_sample=True  temperature=${TEMPERATURE}  top_p=${TOP_P}"
+  echo "              ⚠️ 含随机性；与 do_sample=False 的结果不可直接横比"
+else
+  echo " Decoding   : BEAM_SEARCH（纯束搜索，确定性）  do_sample=False"
+fi
 echo " Result     : ${RESULT_JSON}"
 echo " Meta / 指标: ${META_JSON}"
 echo "              ${METRICS_JSON}"
@@ -156,6 +190,9 @@ T_EVAL_0="$(date +%s)"
   --length_penalty "${LENGTH_PENALTY}" \
   --sid_vocab_path "${SID_VOCAB_PATH}" \
   --max_samples "${MAX_SAMPLES}" \
+  --do_sample "${DO_SAMPLE}" \
+  --temperature "${TEMPERATURE}" \
+  --top_p "${TOP_P}" \
   2>&1 | tee "${EVAL_LOG}"
 T_EVAL_1="$(date +%s)"
 EVAL_SECONDS=$((T_EVAL_1 - T_EVAL_0))
@@ -184,6 +221,9 @@ echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SEC
   --set "info_file=${INFO_FILE}" \
   --set "n_items=$(wc -l < "${INFO_FILE}" | tr -d ' ')" \
   --set "num_beams=${NUM_BEAMS}" \
+  --set "do_sample=${DO_SAMPLE}" \
+  --set "temperature=${TEMPERATURE}" \
+  --set "top_p=${TOP_P}" \
   --set "max_new_tokens=${MAX_NEW_TOKENS}" \
   --set "length_penalty=${LENGTH_PENALTY}" \
   --set "max_samples=${MAX_SAMPLES}" \
