@@ -269,7 +269,28 @@ fi
 # 全量重扫而非增量追加 ⟹ 幂等，永远反映最新全貌；硬串行三阶段跑完自动得到完整对照表。
 # 🔴 与 evaluate 本身解耦：eval 失败也照写（把已有结果保住），只告警。
 # ⚠️ 输出文件 `docs/SFT_EVAL_RESULTS.md` **入 git 且自动生成，勿手改**。
-if [ "${COLLECT:-1}" != "0" ]; then
+#
+# 🔴 [2026-09-19] **本机（Windows）默认不写这张表**，云端（Linux）照写。
+#    原因：`results/sft/` 被 .gitignore 忽略（明细不入仓），但本汇总表**入 git**。
+#    两台机器各自的 results/ 是独立的 ⟹ 谁最后写，表里就只剩谁的内容，
+#    互相挤掉对方的记录（实测：云端 push 后本机 3 条记录消失，反之亦然）。
+#    约定：**表格以云端为准**（云端才有训练产物与全量结果）。
+#    本机想看表就显式 `COLLECT=1 bash evaluate_run0.sh`（清楚自己在做什么时）。
+#    判据用 `uname -s`：Windows 下 git-bash 返回 `MINGW*/MSYS*/CYGWIN*`，Linux 返回 `Linux`。
+_uname_s="$(uname -s 2>/dev/null || echo unknown)"
+if [ "${COLLECT:-auto}" = "auto" ]; then
+  case "${_uname_s}" in
+    Linux|Darwin) COLLECT=1 ;;
+    *)            COLLECT=0 ;;   # MINGW / MSYS / CYGWIN = 本机 Windows
+  esac
+fi
+# 真值陷阱防护（与 DO_SAMPLE / EVAL_BY_EPOCH 同款）：只接受 0 / 1。
+case "${COLLECT}" in
+  0|1) ;;
+  *) echo "[ERROR] COLLECT 只接受 0 / 1（或不传=自动），收到 '${COLLECT}'"; exit 1 ;;
+esac
+
+if [ "${COLLECT}" != "0" ]; then
   echo ""
   echo "---------------- 汇总 --------------------"
   set +e
@@ -282,4 +303,11 @@ if [ "${COLLECT:-1}" != "0" ]; then
     echo "     ${PY} scripts/sft/collect_eval_results.py"
     echo "   跳过汇总：COLLECT=0 bash evaluate_run0.sh"
   fi
+else
+  echo ""
+  echo "---------------- 汇总（已跳过）----------------"
+  echo " 环境=${_uname_s} ⟹ 本机不写 docs/SFT_EVAL_RESULTS.md（该表以云端为准，详见 docs/SFT_PIPELINE.md §3.7）。"
+  echo " 本次结果：results/sft/${EXP_ID}/   （明细已落盘，未汇总进表）"
+  echo " 确实需要本机写表时：COLLECT=1 bash evaluate_run0.sh"
 fi
+

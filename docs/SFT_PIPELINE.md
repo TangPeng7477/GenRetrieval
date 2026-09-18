@@ -715,8 +715,26 @@ bash evaluate_run0.sh
 **汇总已是 `evaluate_run0.sh` 的内置收尾步骤**（`evaluate_run0.sh:219-236`）：全量重扫 `results/sft/` 下
 **所有** EXP_ID 后重写表格 ⟹ 幂等、永远反映最新全貌，硬串行三阶段跑完自动得到完整对照表。
 🔴 与 eval 本身**解耦**：eval 失败也照写（保住已有结果），只告警 —— 用 `set +e` 包住，不影响退出码。
-⏭️ 想跳过：`COLLECT=0 bash evaluate_run0.sh`。手动重跑仍可：
-`${PY} scripts/sft/collect_eval_results.py`（不再需要 `./.venv/Scripts/python.exe` 这种平台相关写法）。
+
+**🔴 `COLLECT` 默认按环境自动判定（2026-09-19 起）—— 本机不写表**：
+
+| 机器 | `uname -s` | 默认 | 行为 |
+|---|---|---|---|
+| 云端 Linux | `Linux` | `COLLECT=1` | 照写表（训练产物与全量结果都在云端，**表以云端为准**） |
+| 本机 Windows | `MINGW64_NT-*` / `MSYS*` / `CYGWIN*` | `COLLECT=0` | **跳过汇总**，打印一行说明（不静默） |
+
+依据：`results/sft/` 被 `.gitignore` 忽略（明细不入仓），但这张汇总表**入 git**。两台机器各自的
+`results/` 是**独立**的 ⟹ 谁最后写，表里就只剩谁扫到的记录，**互相挤掉对方**（实测：云端 push 后本机
+3 条 untrained 记录消失，反之亦然）。所以约定**只由云端写**，本机专注跑冒烟、不碰这张表。
+
+```bash
+bash evaluate_run0.sh                       # 自动：云写 / 本机不写
+COLLECT=1 bash evaluate_run0.sh             # 强制写（本机确实想看表时，清楚自己在做什么）
+COLLECT=0 bash evaluate_run0.sh             # 强制不写（云端临时跳过）
+```
+
+⚠️ `COLLECT` **只接受 `0` / `1`**（或不传 = 自动）；传别的值直接 `exit 1`（真值陷阱防护，同 `DO_SAMPLE` / `EVAL_BY_EPOCH`）。
+手动重跑仍可：`${PY} scripts/sft/collect_eval_results.py`（不再需要 `./.venv/Scripts/python.exe` 这种平台相关写法）。
 
 `collect_eval_results.py` 扫描 `results/sft/*/eval_*.{meta,metrics}.json`，按同名主干配对后输出表格。
 
