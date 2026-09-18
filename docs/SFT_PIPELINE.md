@@ -403,6 +403,36 @@ beam 前3 = [<a_2><b_33><c_179>, <a_7><b_27><c_95>, <a_7><b_27><c_148>]
 
 ⟹ **0.0000 与 0.0168 之间的差，就是"训练"这件事的量化贡献起点。**
 
+#### 3.5.1 `[实测]` 换 chatml 后复跑（2026-09-18，模板收敛的验收）
+
+模板从"3 份实现"收敛为 `config/prompt_templates.json` + `prompt_templates.py` 后，用**同一套未训练基座**
+路径复跑，专门验「响应前缀必须从真源取」这个改动（漏改 = 约束静默失效）：
+
+```bash
+SID_VOCAB_PATH=data/Amazon23/IandS/sft/info/sid_vocab.json \
+MODEL_PATH=models/Qwen3-0.6B EXP_ID=IandS-untrained-tplcheck \
+MAX_SAMPLES=32 BATCH_SIZE=2 NUM_BEAMS=20 bash evaluate_run0.sh      # 实测 1m41s
+```
+
+| 检查项 | 结果 |
+|---|---|
+| `evaluate_run0.sh` 前置闸门（`probe_constrained_decoding.py`） | ✅ 通过（prompt 逐 token 一致 / Trie 5 步） |
+| 现场注册词表 | ✅ 768 个；`tokenizer` 152437 / `embedding` 151936 → 触发 resize |
+| **`predict` 候选全为合法 `<a_x><b_y><c_z>`** | ✅ **640/640 = 100%** |
+| **首个候选是空串的样本数** | ✅ **0 / 32** |
+| `calc.py` 的 `CC`（= metrics 的 `n_generated_not_in_item_dict`） | ✅ **0** |
+| `No valid tokens found for hash_key` 告警 | ✅ **0 次** |
+| HR@1..20 / NDCG@1..20 | 0.0（未训练，预期见上文） |
+
+🔴 **为什么"100% 合法"能证伪"前缀写错"**：`LogitProcessor.py:58-66` 查不到 key 时是**强制 EOS 后
+`continue`** —— 生成会变成**空串**，而不是畸形 SID。所以只要有一条合法生成，就说明**第 0 步的
+`hash_key = prompt[-3:]` 在 Trie 里查到了**。探针同时给出闭环：Trie 的 step0 key =
+`151644-77091-198`（正是 chatml 前缀）、候选 256；评估端 prompt 末 3 token 也是 `[151644, 77091, 198]`。
+
+> 反例（本该失败的样子）：不给 `SID_VOCAB_PATH`、把 `MODEL_PATH` 指回 `models/Qwen3-0.6B`，
+> 前置检查会直接拦下并打印正确命令（`tokenizer.json` 里没有 `<a_0>`）。已实测。
+
+
 > 📁 **该锚点已作为一个正式版本落盘**（`RUN_TAG=untrained`），产物在
 > `results/sft/IandS-untrained/`，与训练后的结果同一套命名、可直接并列比较：
 > ```bash
