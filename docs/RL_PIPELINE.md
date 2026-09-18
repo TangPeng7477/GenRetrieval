@@ -84,7 +84,7 @@ REWARD_TYPE=ranking RUN_TAG=R1 bash rl_run0.sh
 
 RL 的约束生成**与 `evaluate.py` 同源**：两者都从 `info_file` 第 1 列（SID 串）建前缀映射。
 
-**建表**（`minionerec_trainer.py:529-572`，ReReTrainer `__init__`）：
+**建表**（`minionerec_trainer.py:530-572`，ReReTrainer `__init__`）：
 
 ```
 info_file 每行 -> split('\t')[0] + "\n" -> 前置**响应前缀**（pt.response_prefix()，默认 chatml = <|im_start|>assistant\n）
@@ -104,7 +104,7 @@ else:                hash_key = sent[-self.count:]          # 倒数 count 个
 ⟹ 长 prompt 不影响：**只要 prompt 末尾恰好是响应前缀**。默认 chatml 的
 `<|im_start|>assistant\n` = `[151644, 77091, 198]`，alpaca 的 `### Response:\n` = `[14374, 5949, 510]`
 —— **两者都恰好 3 个 token**，所以 `prefix_index=3` 两种格式都成立。
-前缀一律从 `pt.response_prefix()` 取（`minionerec_trainer.py:536-537`），**不准手抄**。
+前缀一律从 `pt.response_prefix()` 取（`minionerec_trainer.py:538-539`），**不准手抄**。
 而 `minionerec_trainer.py:675-678` 用的是
 `maybe_apply_chat_template`（我们的输入是纯字符串、非 conversational ⟹ **不套 chat template**）
 + `add_special_tokens=False`，所以不会被追加尾 token。两条合起来前提成立。
@@ -207,12 +207,12 @@ grep -E 'HR@|NDCG@|reward' logs/rl/IandS-rl0/rl.log | tail -30
 ⚠️ 先纠正一个常见误解：**"GRPO 要额外一份参考模型、所以显存翻倍"——在 LoRA/PEFT 下不成立。**
 
 ```
-minionerec_trainer.py:283-292            参考模型怎么来的
+minionerec_trainer.py:287-293            参考模型怎么来的
     if   is_deepspeed_zero3_enabled():  ref_model = from_pretrained(...)          # 只有 ZeRO-3 另载
     elif not is_peft_model(model):      ref_model = create_reference_model(model) # 全参：真多一份
     else:                               ref_model = None                          # PEFT：**不加载**
 
-minionerec_trainer.py:895-904            参考 logps 怎么算
+minionerec_trainer.py:898-906            参考 logps 怎么算
     if self.ref_model is not None:  ref = self._get_per_token_logps(self.ref_model, ...)
     else:  with unwrap_model(self.model).disable_adapter():                       # 复用同一份权重
                ref = self._get_per_token_logps(self.model, ...)

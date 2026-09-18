@@ -154,7 +154,7 @@ data/Amazon23/<域>/sft/
 ```
 
 **CSV 7 列**（`user_id, history_item_title, item_title, history_item_id, item_id, history_item_sid, item_sid`）
-—— 后四个是 list 的 Python repr 字符串，因为 MiniOneRec 用 `eval(row[...])` 读 `[代码] data.py:404`。
+—— 后四个是 list 的 Python repr 字符串，因为 MiniOneRec 用 `eval(row[...])` 读 `[代码] data.py:377`。
 
 ### 复现命令
 
@@ -241,7 +241,7 @@ data/Amazon23/<域>/sft/
 
 > ⚠️ **诚实边界（未接线项，不影响 Run-0 可跑）**：`tasks/*.jsonl` 与
 > `prompts/{alpaca,chatml}/*.jsonl` **目前没有消费方**。训练端 T1/T2/T3 的数据由 `data.py`
-> 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:353` 的 `SidItemFeatDataset` 用
+> 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:432` 的 `SidItemFeatDataset` 用
 > `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:357` 的 `FusionSeqRecDataset` 同）。
 > 明文 prompt 渲染产物是给后续「格式消融 / 训练端直读明文」预留的，暂未接线。
 >
@@ -592,7 +592,7 @@ EXP_ID = <域>-<RUN_TAG>[-<任务集>]      例 IandS-run0 / IandS-run0-T1T3 / I
   "git_commit": "c2326a7", "started_at": "2026-09-16T20:27:08+08:00" }
 ```
 
-- `base_model_has_sid_token_map` = 训练产物标记（`sft.py:302` 落盘的 `sid_token_map.json`）
+- `base_model_has_sid_token_map` = 训练产物标记（`sft.py:355` 落盘的 `sid_token_map.json`）
 - `registered_at_eval` = 是否走了 dry-run 的现场注册（正常评估应为 `false`）
 
 🔴 元数据**不写进 result json** —— `calc.py` 假设它是 `list[dict]`
@@ -732,7 +732,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 
 ### 3.9 Checkpoint 保存与 eval 节奏（2026-09-16 读源码 + 实测）
 
-**结论：按步数存，不按 epoch 存。** `sft.py:470-476` 里 eval 与 save 全部用 `steps` 策略。
+**结论：按步数存，不按 epoch 存。** `sft.py:478-505` 里 eval 与 save 全部用 `steps` 策略。
 
 | 参数 | 值 | 说明 |
 |---|---|---|
@@ -804,7 +804,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 （根因是 LoRA 的 `modules_to_save=[embed_tokens, lm_head]` 让可训参数到 321 M，
 AdamW fp32 状态 ≈ 2.57 GiB。）
 
-**eval 是第二个瓶颈**：`sft.py:462` 把 `per_device_eval_batch_size` 绑死在 `micro_batch_size` 上，
+**eval 是第二个瓶颈**：`sft.py:480-481` 把 `per_device_eval_batch_size` 绑死在 `micro_batch_size` 上，
 micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval ⟹ **+27.4 h**。
 
 ⟹ `[实测]` 合计：AdamW **225.7 h（9.4 天）**；换 8-bit Adam 也要 **85.2 h（3.5 天）**。
@@ -827,7 +827,7 @@ micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval
 
 - 把 `optim` 变成参数（`sft.py:469` 现写死 `"adamw_torch"`）→ 本地可切 `adamw_bnb_8bit`，
   峰值 4.26 → 3.05 GiB，单步 1.140 → 0.332 s
-- 把 `per_device_eval_batch_size` 与 `micro_batch_size` 解耦（`sft.py:462`）→ eval 从 82 min
+- 把 `per_device_eval_batch_size` 与 `micro_batch_size` 解耦（`sft.py:480-481`）→ eval 从 82 min
   降到 ~10 min 量级（batch 放大 8 倍）
 
 ⚠️ 这两项只对本地有意义；**全量训练一律上云**（3090 不受 4 GiB 限制）。
@@ -885,7 +885,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 |---|---|---|
 | `prepare_sft_data.py`（构造四任务） | ❌ 只按**字符**截（`--max_text_chars 512`），不管 token | 无 tokenizer |
 | ~~`build_sft_prompts.py`（渲染明文）~~ | 🗑️ **脚本已删**（2026-09-18） | 它另有一条「从不截断」的事实，随脚本一并作废 |
-| **`data.py:190-197`（训练端）** | ✅ `tokens[-max_len:]` —— **从左侧砍** | 唯一真正的截断点 |
+| **`data.py:204-211`（训练端）** | ✅ `tokens[-max_len:]` —— **从左侧砍** | 唯一真正的截断点 |
 
 所以数据集里存的是**明文**，长度是训练时才决定的 —— **改参数就够了，不用重生成**。
 
@@ -963,7 +963,7 @@ right: 短样本 labels = [-100 ×5,  <a_5>, <b_23>, <c_66>, 151645, -100 ×15] 
 |---|---|---|
 | `data.py` completion 末尾 EOS | `tokenizer.eos_token_id` | 自动跟随 |
 | `evaluate.py:109-110` Trie `ID.append(tokenizer.eos_token_id)` | 同上 | 自动跟随 |
-| `sft.py:233` `tokenizer.pad_token = tokenizer.eos_token` | 同上 | pad 会跟着变（无影响，pad 位被 -100 屏蔽） |
+| `sft.py:285` `tokenizer.pad_token = tokenizer.eos_token` | 同上 | pad 会跟着变（无影响，pad 位被 -100 屏蔽） |
 
 **推荐做法（TRL 官方口径）**：训练时**把 eos 显式设成与 chat_template 一致的 `<|im_end|>`**。
 TRL `SFTTrainer` 文档原文：
@@ -1106,7 +1106,7 @@ sha256 `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` ——
 | `sft.py` | `:192` `torch_compile` | 硬编码 `True` → 参数 `--torch_compile`，**默认 `False`** | `[设计]` 动态 padding 下每 batch 宽度不同，`torch.compile` 会反复重编译。**未做实测对比**，先关保守 |
 | `sft.py` | `:190` 新增 `--tasks`<br>`:147` `resolve_tasks` | 训练集由 `ConcatDataset` 三路硬拼 → 可选子集。<br>**默认 `T1,T2a,T2b,T3` 全开，Run-0 行为不变** | §3.3；为任务消融铺路，与 §6.5「每项只改一个变量」配套 |
 | `data.py` | `:623-631` `EvalSidDataset.get_history` | 输入句式统一回训练端口径 | `[实测]` §3.4：原版此处与三个训练类**不一致**（共同前缀仅 49 token）→ train/eval prompt 漂移，会静默掉点 |
-| `evaluate.py` | `:51` 新增 `--sid_vocab_path`<br>`:52` 新增 `--max_samples` | 现场注册 SID 词表（口径同 `sft.py:241-306`）+ 限制样本数，供 **dry-run / 未训练基座** 用。<br>**两者默认关闭，现有评估行为完全不变** | §3.5：evaluator 冒烟测试 + 随机下界锚点 |
+| `evaluate.py` | `:51` 新增 `--sid_vocab_path`<br>`:52` 新增 `--max_samples` | 现场注册 SID 词表（口径同 `sft.py:304/323/357`）+ 限制样本数，供 **dry-run / 未训练基座** 用。<br>**两者默认关闭，现有评估行为完全不变** | §3.5：evaluator 冒烟测试 + 随机下界锚点 |
 | `evaluate_run0.sh` | — | 通用化：`EXP_ID` 命名规范 + 自动反推 + SID 健全性检查 | §3.6 —— 修掉「**所有版本结果写同一文件互相覆盖**」（原用 `basename(MODEL_PATH)`，而它恒为 `final_checkpoint`） |
 | `sft_run0.sh` | — | 产物改落 `outputs/<EXP_ID>/`，日志进 `logs/<EXP_ID>/` | §3.6 命名统一 |
 | `scripts/sft/eval_report.py` | — | **新增**：落 `*.meta.json`（版本元数据）与 `*.metrics.json`（HR/NDCG） | 不改 `calc.py` 的口径，只在外层解析其 stdout |
@@ -1155,7 +1155,7 @@ C prefix_index  : "### Response:\n" 三种 encode 路径均 = 3 token
 > 最后一行解释了一个容易误判的点：T1 的 label **不是 3 个 token**，而是
 > `[a, b, c, \n, EOS]` 共 5 个。`\n` 不是脏数据 —— `LogitProcessor.py` 第 4 步（`count=3`）
 > 命中 `hash([a,b,c])` 只放 `\n`，第 5 步才命中 `hash([a,b,c,\n])` 放 EOS，
-> 与 `data.py:417` 的 `output = target_item + "\n"` 完全自洽。
+> 与 `data.py:391` 的 `output = target_item + "\n"` 完全自洽。
 
 ---
 
@@ -1224,7 +1224,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 | **S1 主训练** | T1 + T3 + T2 + T4（MiniOneRec 默认比例，见下） | ~80% | 全开 | 5e-4（沿用 V0） | 学序列模式，辅助任务防遗忘 |
 | **S2 退火** | **只 T1** | ~12% | 全开 | 余弦 → 0 | 去掉辅助任务分布干扰，贴合评估口径 |
 
-`[实测]` MiniOneRec `sft.py:340-368` 是 `ConcatDataset([SidSFTDataset, SidItemFeatDataset, FusionSeqRecDataset])`，
+`[实测]` MiniOneRec `sft.py:446` 是 `ConcatDataset([SidSFTDataset, SidItemFeatDataset, FusionSeqRecDataset])`，
 单阶段、不分先后。按我们产物算出的**实际配比**：
 
 | 域 | T1 seq2sid | T2（2N，双向） | T3 seq2title | 合计 | T1 : T3 : T2 |
@@ -1248,7 +1248,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 ### 6.4 `[实测]` 两个必须先知道的实现细节
 
-**(1) `freeze_LLM=True` 已经就是 S0，不用自己写**（`sft.py:309-330`）：
+**(1) `freeze_LLM=True` 已经就是 S0，不用自己写**（`sft.py:388-409`）：
 全参数冻结 → 只解冻 `get_input_embeddings().weight` → **注册 grad hook 把前 `original_vocab_size` 行梯度清零**。
 即：实际只有 768×1024 = 786,432 个参数在动。因为 Qwen3-0.6B 是 `tie_word_embeddings=true`
 （`models/Qwen3-0.6B/config.json`），这个张量同时是 lm_head，所以"只训 embedding"在 tied 下语义正确。
