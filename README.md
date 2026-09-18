@@ -423,6 +423,7 @@ baseline/{SURVEY,README,RESULTS}.md         综述 / 口径与设置 / 自动生
 | [baseline/RESULTS.md](baseline/RESULTS.md) | 双域基线实测结果表（自动生成，随跑随更新） |
 | — | `docs/EXPERIMENT_LOG.md`（实验流水账）为本地文档，按要求未上传 |
 | [docs/V0_MINIONEREC_TECH_DOC.md](docs/V0_MINIONEREC_TECH_DOC.md) | V0 复刻版技术文档（归档） |
+| **[docs/DECODING_STRATEGIES.md](docs/DECODING_STRATEGIES.md)** | **解码策略详解**：贪心/束搜索/束采样机制对比 + 全部采样方法清单 + **本项目 SID 结构实测与选型建议** + 面试速答版 |
 
 ---
 
