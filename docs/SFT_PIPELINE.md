@@ -550,6 +550,60 @@ batch 加不上去（换页）、beam 是 `HR@K` 硬上限不能压、评估协�
 
 ⚠️ **MRR 对生成式禁止横向比较**（`EVAL_PROTOCOL §3.4`：MRR ≈ 1/beam 是结构常数）。
 
+#### 3.5.4 `[实测]` 评估端其实在**采样**（beam sampling）—— 基座自带，不是本项目引入（2026-09-18）
+
+**起因**：评估 hs1 时日志打出 `generation_config` 提示 `do_sample: True`，
+而 `evaluate.py` 全文**没有** `do_sample` 这个字 ⟹ 为什么会开？会不会拖慢评估？
+
+**结论（判决式实测，非推测）**：**确实在采样**，但不是我们设的，是**继承自基座的
+`generation_config.json`**。且 **MiniOneRec 原版一模一样**（同一份 `evaluate.py` + 同样带
+`do_sample: true` 的 Qwen2.5 基座）⟹ **两边口径一致，与 V0 仍可比。**
+
+**证据链（每步都实测过）**：
+
+| 步 | 事实 | 判据 |
+|---|---|---|
+| ① | `evaluate.py:207-217` 构造 `GenerationConfig` 时**未传 `do_sample`** | `grep -n do_sample evaluate.py` → 0 命中 |
+| ② | 裸 `GenerationConfig()` 的默认值是 `do_sample=False` | 实测打印：`do_sample=False, temperature=1.0` |
+| ③ | 但 `generate()` 走 `_prepare_generation_config`，其**参数优先级**为<br>`kwargs > 传入 config 中的非默认值 > model.generation_config > GenerationConfig()` | `transformers/generation/utils.py` 该函数 docstring 原文 |
+| ④ | 合并规则：**传入值 == 全局默认值 且 模型值 != 全局默认值** ⟹ 取**模型值** | 该函数源码 `if custom_gen_config_value == global_default_value and model_gen_config_value != global_default_value:` |
+| ⑤ | 本项目 `models/Qwen3-0.6B/generation_config.json` 含 `do_sample: true` / `temperature: 0.6` | 读文件 |
+| ⑥ | **实跑真实对象**：`do_sample` 由 `False` → **`True`**，`temperature` → **`0.6`** | 调 `_prepare_generation_config(gc)` 后打印；且**复现出用户看到的那条 warning** |
+
+⟹ 生效配置：**`do_sample=True` + `temperature=0.6` + `num_beams=50`** = **beam sampling**
+（每个 beam 独立采样），**不是**纯 beam search。
+
+**三个连带结论**：
+
+1. **`temperature` 是死参数**：`evaluate.py:7` import 了 `TemperatureLogitsWarper`、原版
+   `evaluate.sh` 也传了 `--temperature 1.0`，但 `main()` 签名里**没有** `temperature` ⟹ fire
+   吃掉后丢弃，**从未进入解码**。真正生效的温度 0.6 来自基座文件。
+   ⚠️ 也就是说**"改 `--temperature` 能改变评估结果"是错的**。
+2. **`top_k`/`top_p` 传 `None` 是有效的**（≠ 全局默认），所以**没有**被模型值 20/0.95 覆盖
+   ⟹ 采样在**无 top-k/top-p 截断**的全词表上做。这是当前唯一被显式关掉的采样旋钮。
+3. **不可复现**：`set_seed(42)` 只保证 `torch` 随机种子，位置在采样路径上不足以完全固定输出
+   ⟹ **同一模型重复 eval 结果会有抖动**，报数时应视为一次抽样。
+
+**为什么慢 —— 与采样无关**：
+
+- `do_sample=True` **不会**让解码变慢（仍是每步一次前向 + logits 处理），KV cache 复用率
+  确实会略降，但不是 8~9 h 的主因。
+- **真正的原因是 `batch_size × num_beams` 的序列展开**：本项目云端 `BATCH_SIZE=8` ×
+  `NUM_BEAMS=50` = **400 条序列/批**、全量 50,982 条 ≈ **6373 批**。
+- **MiniOneRec 原版看起来快，是因为 8 卡并行**：`evaluate.sh` 用
+  `cudalist="0 1 2 3 4 5 6 7"` 起 8 个进程 + `split.py`/`merge.py` 分片回收，
+  **单卡配置其实完全相同**（`--batch_size 8 --num_beams 50 --max_new_tokens 256`）。
+  ⟹ 不是"它更快"，是"它有 8 张卡"。
+
+🔴 **红线**：**评估端的 `do_sample` 由基座 `generation_config.json` 决定，不由本仓代码决定。**
+- 换基座 ⟹ **必须重新确认**该文件的 `do_sample` / `temperature`，否则口径静默漂移。
+- 想改口径 ⟹ 在 `evaluate.py:207` 的构造里**显式**写 `do_sample=` / `temperature=`，
+  **不要**去改基座文件（那会污染训练侧）；且改了**必须两套都跑**并把值记进 meta
+  （现有 meta 只记了 `num_beams` / `prompt_format`，**没记 `do_sample`** ⟹ 跨版本比 HR 前先回溯基座）。
+- ⚠️ 训练产物 `final_checkpoint/` 的 `generation_config.json` 是
+  `save_pretrained` 从基座**继承**写的（`sft.py:536/539`）⟹ 它反映的是**基座**设置，
+  不是训练引入的。**别误读成"训练把采样打开了"。**
+
 ### 3.6 实验命名规范：一个 `EXP_ID` 串起训练与评估（2026-09-16）
 
 **动机**：跑消融时最怕"这个 `final_result.json` 到底是谁的结果"。原先
