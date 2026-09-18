@@ -74,6 +74,19 @@ case "${EVAL_BY_EPOCH}" in
   *) echo "[ERROR] EVAL_BY_EPOCH 只接受 True / False，收到 '${EVAL_BY_EPOCH}'"; exit 1 ;;
 esac
 
+# [本项目 2026-09-19 新增] 早停开关（sft.py 同名参数）。
+#   0  = 关闭早停，**训满 NUM_EPOCHS 轮**；final_checkpoint = 最后一轮（硬串行接续训练要的语义）。
+#   >0 = 连续 N 次 eval 无改善就停（旧行为 = 3，原先硬编码在 sft.py，已开关化）。
+# 🔴 为什么重要：hs1 实测在 **epoch 0.906** 就被早停打断 ⟹ 样本覆盖不全、无法回答"训满是否更好"；
+#    硬串行配方的记账前提是每阶段完整跑完。
+# ⚠️ 置 0 时 sft.py 会自动把 load_best_model_at_end 也置 False（HF 要求二者同开同关）。
+EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-3}"
+# 🔴 真值陷阱防护：必须是非负整数。传 "False"/"None" 之类会变成字符串 ->
+#    fire 尝试 int() 报错，或（更糟）被当成非零真值静默开启早停。
+case "${EARLY_STOP_PATIENCE}" in
+  ''|*[!0-9]*) echo "[ERROR] EARLY_STOP_PATIENCE 只接受非负整数（0 = 关闭早停），收到 '${EARLY_STOP_PATIENCE}'"; exit 1 ;;
+esac
+
 # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
 # 🔴 V100(sm_70) 没有原生 bf16；且 torch 的 is_bf16_supported 会做「只分配张量」的弱探测而
 #    返回 True，transformers 因此**不报错**，会一路用 bf16 跑下去 —— 必须手动指定 fp16。
@@ -145,6 +158,11 @@ if [ "${EVAL_BY_EPOCH}" = "True" ]; then
 else
   echo " eval_frac   : ${EVAL_FRAC}   (本地冒烟请调大，见脚本注释)"
 fi
+if [ "${EARLY_STOP_PATIENCE}" = "0" ]; then
+  echo " early_stop  : 已关闭 ⟹ 训满 ${NUM_EPOCHS} 轮（final_checkpoint = 最后一轮）"
+else
+  echo " early_stop  : patience=${EARLY_STOP_PATIENCE}（连续 ${EARLY_STOP_PATIENCE} 次无改善即停）"
+fi
 echo " precision   : ${PRECISION}   (V100/Volta 请用 fp16)"
 echo "=========================================="
 
@@ -174,6 +192,7 @@ echo "=========================================="
   --lora_target_modules "${LORA_TARGETS}" \
   --eval_frac "${EVAL_FRAC}" \
   --eval_by_epoch "${EVAL_BY_EPOCH}" \
+  --early_stop_patience "${EARLY_STOP_PATIENCE}" \
   --precision "${PRECISION}" \
   2>&1 | tee "./logs/sft/${EXP_ID}/sft.log"
 

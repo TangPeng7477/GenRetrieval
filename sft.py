@@ -234,6 +234,16 @@ def train(
     #    所以 final_checkpoint 是"最后一轮"而非 best —— 硬串行接续训练正需要这个语义。
     eval_by_epoch: bool = False,
 
+    # [本项目 2026-09-19 新增] 早停耐心值。
+    #   0  = **完全关闭早停**，训满 num_epochs（推荐用于「至少保证完整训完 1 轮」的场景）。
+    #   >0 = 连续 N 次 eval 无改善就停（旧行为 = 3，硬编码，已开关化）。
+    # 🔴 为什么需要它：hs1 实测在 epoch 0.906 就被早停打断 ⟹ **样本覆盖不全**，
+    #    对照表里必须标注，且无法回答"训满是否更好"。硬串行配方要求每阶段完整跑完，
+    #    否则「总算力不变」的记账前提就不成立。
+    # ⚠️ 关闭早停时 `load_best_model_at_end` 必须同时置 False（HF 要求二者同开同关），
+    #    且 `save_total_limit=1` 下 final_checkpoint = **最后一轮**而非 best —— 正是接续训练要的语义。
+    early_stop_patience: int = 3,
+
     # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
     precision: str = "bf16",
 ):
@@ -485,6 +495,23 @@ def train(
     else:
         _eval_strategy, _save_strategy = "steps", "steps"
         _eval_steps = _save_steps = eval_step
+
+    # [本项目 2026-09-19] 早停开关。
+    #   ① early_stop_patience <= 0 -> 不挂 callback，且 load_best_model_at_end 必须置 False
+    #      （HF 硬约束：load_best_model_at_end=True 需要 eval+save 策略一致且有可比较的 metric；
+    #        没有早停时保留 best 语义反而会让 final_checkpoint 指向中途某轮，
+    #        破坏硬串行「接着上阶段最后一轮继续训」的前提）。
+    #   ② >0 -> 保持旧行为，patience 取该值。
+    _use_early_stop = early_stop_patience and early_stop_patience > 0
+    _load_best = bool(_use_early_stop)
+    if _use_early_stop:
+        callbacks = [EarlyStoppingCallback(early_stopping_patience=early_stop_patience)]
+        print(f"[早停] 开启  patience={early_stop_patience}  "
+              f"（连续 {early_stop_patience} 次 eval 无改善即停）")
+    else:
+        callbacks = []
+        print(f"[早停] 已关闭（early_stop_patience={early_stop_patience}）⟹ 训满 {num_epochs} 轮；"
+              f"final_checkpoint = 最后一轮")
     trainer = transformers.Trainer(
         # deepspeed=deepspeed,
         model=model,
@@ -509,7 +536,7 @@ def train(
             save_steps=_save_steps,
             output_dir=output_dir,
             save_total_limit=1,
-            load_best_model_at_end=True,
+            load_best_model_at_end=_load_best,
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if wandb_project or wandb_run_name else "none",
@@ -518,7 +545,7 @@ def train(
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
-        callbacks = [EarlyStoppingCallback(early_stopping_patience=3)],
+        callbacks=callbacks,
         # optimizers=(optimizer, lr_scheduler) 
     )
     model.config.use_cache = False
