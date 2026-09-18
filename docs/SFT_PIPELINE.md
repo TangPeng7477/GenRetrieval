@@ -1348,6 +1348,61 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 ---
 
+
+### 6.6 `[实测]` 硬串行配方（2026-09-18 用户选定执行方式）
+
+> ⚠️ **§6.1 否决过硬串行，本节不推翻它** —— 而是把被选定的做法写清楚并记账。
+> 引用这组数字时必须写明「**硬串行、有遗忘风险**」，不能与 Run-0 的混合训练混在一起归因。
+
+**要改的参数不是"只一个"**：
+
+| 阶段 | 必改 | 建议显式给 | 产出目录 |
+|---|---|---|---|
+| 1 | `TASKS` | `RUN_TAG` | `outputs/<域>-<tag>-<任务集>/` |
+| 2 | `TASKS` **+ `BASE_MODEL`** | `RUN_TAG` | 同上 |
+| 3 | `TASKS` **+ `BASE_MODEL`** | `RUN_TAG` | 同上 |
+
+- `TASKS` 一旦非默认值，脚本会**自动加后缀**（`sft_run0.sh:36-40`：`T2a,T2b` → `-T2aT2b`）
+  ⟹ 不同 `TASKS` 的阶段**不会互相覆盖**。但三段都叫 `run0` 时汇总表里看不出先后，所以**显式给 `RUN_TAG`**。
+- 🔴 **`BASE_MODEL` 必须指上一阶段的 `final_checkpoint/`**（合并后的完整权重 + 扩展词表）。
+  指回 `models/Qwen3-0.6B` ⟹ **上一阶段白训**。⚠️ 脚本只会校验该目录下有 `model.safetensors`
+  （`sft_run0.sh:110-111`），**校验不出这个语义错误**。
+- ⚠️ **`resume_from_checkpoint` 不是接续手段**：它是同一个 run 的中断续训（`sft.py:205`）；
+  换任务集必须走 `BASE_MODEL`。
+- 链式接续是安全的：上一阶段产物已含扩展词表 ⟹ `add_tokens` 新增 0 个、`resize_token_embeddings` 成为空操作（`sft.py:323-324`）。
+
+**推荐顺序 = 把 S0/S1/S2 的软版硬串行化**（比"T1→T2→T3"更贴合 §6.2 的设计意图）：
+
+```bash
+# ── 阶段 1 = 对齐（≈ S0）：只训 T2，让 768 个新 token 先进语义空间
+TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
+#    -> outputs/IandS-hs1-T2aT2b/final_checkpoint
+
+# ── 阶段 2 = 主训练（≈ S1）：T1（主指标）+ T3（标题生成），从阶段 1 接着训
+TASKS=T1,T3 RUN_TAG=hs2 BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
+#    -> outputs/IandS-hs2-T1T3/final_checkpoint
+
+# ── 阶段 3 = 退火（≈ S2）：只 T1，去掉辅助任务分布干扰，贴合评估口径
+TASKS=T1 RUN_TAG=hs3 BASE_MODEL=outputs/IandS-hs2-T1T3/final_checkpoint bash sft_run0.sh
+#    -> outputs/IandS-hs3-T1/final_checkpoint
+
+# ── 每阶段单独评估（EXP_ID 从 MODEL_PATH 自动反推）
+MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
+```
+
+（若坚持严格的 `T1 → T2 → T3`，把上面三行的 `TASKS` 换成 `T1` / `T2a,T2b` / `T3` 即可；
+⚠️ **顺序本身就是一个变量** —— 两组结果不可互比。）
+
+**记账（写给未来的自己 / 面试）**：
+
+| 项 | 说明 |
+|---|---|
+| 总算力 | **与单次全开相当**：数据总量仍是 469,692 行 × 3 epoch（§6.2），只是分三段跑、多两次 LR warmup 与存档 |
+| 新增风险 ① | **灾难性遗忘**（硬切、无 replay）—— 这是 §6.1 否它的主因 |
+| 新增风险 ② | 三段各有自己的 LR 曲线与 checkpoint，**每段都要单独评估**才有轨迹 |
+| 新增风险 ③ | **顺序是变量**：`T2→T1+T3→T1` 与 `T1→T2→T3` 结果不同，只能与"同顺序"的组对比 |
+| 与 §6.5 的关系 | `Run-0…Run-3` 仍**先跑 Run-0 锚点**；本条是**并行的支线**（用 `hs*` 前缀），**不要**与 `Run-*` 混用同一 EXP_ID 空间 |
+
 ## 7. 待办 / 未做（诚实边界）
 
 | 项 | 状态 | 说明 |
