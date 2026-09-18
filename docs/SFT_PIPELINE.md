@@ -830,10 +830,31 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 | `eval_steps` / `save_steps` | `eval_frac`（**同一个变量**） | 语义见下 |
 | `logging_steps` | 1 | 每步打 `{loss, grad_norm, learning_rate}` |
 | `save_total_limit` | 1 | 运行时会被抬到 2（见「安全网」） |
-| `load_best_model_at_end` | True | 训练结束回滚到最优 ckpt |
+| `load_best_model_at_end` | True（随早停开关联动，见下） | 训练结束回滚到最优 ckpt；**早停关闭时自动置 False** |
 | `metric_for_best_model` | **`'loss'`**（自动默认） | 未传 `compute_metrics` ⟹ 按 `eval_loss` 选优；`greater_is_better=False` |
 | `save_only_model` | False（默认） | ⟹ checkpoint 里含 **`optimizer.pt`**（1.8–3.1 GB/个的成因） |
-| 早停 | `EarlyStoppingCallback(patience=3)` | 盯同一个 `eval_loss` |
+| 早停 | `EARLY_STOP_PATIENCE`（默认 3，`0` = 关闭） | 盯同一个 `eval_loss` —— 🔴 **见下方「早停的两 rö 问题」** |
+
+**🔴 早停的两个问题（2026-09-19 读源码 + 日志实测）**
+
+① **判据错配 —— 早停盯的是 `eval_loss`，不是 T1 的 HR/召回质量。**
+`metric_for_best_model` 未显式指定时 HF 自动取 `'loss'`（`greater_is_better=False`），
+而 `eval_loss` 是**所有选中任务混合**的 loss。硬串行阶段 2 是 `TASKS=T1,T3`，
+其中 T3 是「历史 SID → 目标 title」，与生成式召回质量**不是一回事**
+⟹ **很可能在"T1 其实还在进步"时，因为 T3 的 loss 不再降而提前停掉。**
+这是 `hs1` 在 epoch 0.906 停的**更根本嫌疑**，比"patience 设小了"更值得警惕。
+（要根治需给 `compute_metrics` 传真实检索指标 —— ⏸ 未做，当前靠关早停绕开。）
+
+② **样本覆盖不全** —— 早停触发时 epoch 未跑完，训练集没被完整看一遍
+（`hs1` 实测 epoch 0.906）⟹ 汇总表必须标注，且**无法回答"训满是否更好"**。
+
+⚠️ **判据：用日志里的 `epoch` 字段，不要反推步数** —— `Trainer` 每步都打
+`{'loss': ..., 'epoch': 0.XX}`，eval 也带 epoch。**`EVAL_BY_EPOCH=True` 下这本就是
+脚本自己的触发语义**（`eval_strategy="epoch"`）⟹ 看到 `'epoch': 1.0` = 跑满一轮；
+只到 `0.906` 就结束 = 被早停打断。一条命令即可核验：
+```bash
+grep -o "'epoch': [0-9.]*" logs/sft/<EXP_ID>/sft.log | tail -3
+```
 
 **两种模式（`EVAL_BY_EPOCH`，2026-09-19 新增）**
 
@@ -1486,15 +1507,16 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 ```bash
 # ── 阶段 1 = 对齐（≈ S0）：只训 T2，让 768 个新 token 先进语义空间
 # 🔴 EVAL_BY_EPOCH=True：每轮 eval 一次（各阶段步数不同，写死 EVAL_FRAC 魔数迟早算错）
-EVAL_BY_EPOCH=True TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
+# 🔴 EARLY_STOP_PATIENCE=0：关闭早停，保证每阶段完整训满（否则 hs1 那样在 epoch 0.906 就被打断）
+EVAL_BY_EPOCH=True EARLY_STOP_PATIENCE=0 TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
 #    -> outputs/IandS-hs1-T2aT2b/final_checkpoint
 
 # ── 阶段 2 = 主训练（≈ S1）：T1（主指标）+ T3（标题生成），从阶段 1 接着训
-EVAL_BY_EPOCH=True TASKS=T1,T3 RUN_TAG=hs2 BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
+EVAL_BY_EPOCH=True EARLY_STOP_PATIENCE=0 TASKS=T1,T3 RUN_TAG=hs2 BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
 #    -> outputs/IandS-hs2-T1T3/final_checkpoint
 
 # ── 阶段 3 = 退火（≈ S2）：只 T1，去掉辅助任务分布干扰，贴合评估口径
-EVAL_BY_EPOCH=True TASKS=T1 RUN_TAG=hs3 BASE_MODEL=outputs/IandS-hs2-T1T3/final_checkpoint bash sft_run0.sh
+EVAL_BY_EPOCH=True EARLY_STOP_PATIENCE=0 TASKS=T1 RUN_TAG=hs3 BASE_MODEL=outputs/IandS-hs2-T1T3/final_checkpoint bash sft_run0.sh
 #    -> outputs/IandS-hs3-T1/final_checkpoint
 
 # ── 每阶段单独评估（EXP_ID 从 MODEL_PATH 自动反推）
@@ -1510,6 +1532,21 @@ MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
 改成每轮一次（共 3 次）⟹ 总计约 **90 min**。
 `MICRO_BATCH_SIZE` 也可从默认 4 抬到 16（3090 显存用不到一半）：梯度等价（accum 16→4）、
 且 `per_device_eval_batch_size` 同变量（`sft.py:497`）⟹ **eval 一并提速 4×**。
+
+⚠️ **这条配方必须配 `EARLY_STOP_PATIENCE=0`（关闭早停）**（`[实测]` + 开关落地 2026-09-19）：
+
+- **依据**：`hs1` 实测在 **epoch 0.906** 就被早停打断（patience=3 原先硬编码在 `sft.py`）。
+  样本覆盖不全 ⟹ 汇总表里必须标注，且**无法回答"训满是否更好"**。
+- 🔴 **更根本的理由：早停的判据本身错配** —— 它盯 `eval_loss`（所有任务混合），
+  而阶段 2 的 `TASKS=T1,T3` 里 T3 是「历史 SID → 目标 title」，与召回质量不是一回事
+  ⟹ **会在 T1 还在进步时被别的任务的 loss 停掉**。详见 §3.9「早停的两个问题」。
+- 🔴 **硬串行的记账前提是每阶段完整跑完** —— 否则「总算力与单次全开相当」这句话就不成立
+  （§6.2 的 469,692 行 × 3 epoch 是按完整轮数算的）。
+- **语义变化**：关早停后 `load_best_model_at_end` 也置 `False`（HF 要求二者同开同关）
+  ⟹ **`final_checkpoint` = 最后一轮**而非 best。这正是接续训练要的语义
+  （下一阶段要"接着上阶段末尾继续"，不是"回到上阶段最优点"）。
+- **用法**：`EARLY_STOP_PATIENCE=0`（默认 `3` 保留旧行为）。启动日志会回显 `early_stop : 已关闭 ⟹ 训满 N 轮`。
+- ⚠️ 若想保留"选 best"语义，就别关早停 —— 二者不可兼得。
 
 **记账（写给未来的自己 / 面试）**：
 
