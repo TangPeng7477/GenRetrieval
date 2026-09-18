@@ -712,7 +712,7 @@ bash evaluate_run0.sh
 #   -> docs/SFT_EVAL_RESULTS.md        （全量重扫 results/sft/，覆盖重写）
 ```
 
-**汇总已是 `evaluate_run0.sh` 的内置收尾步骤**（`evaluate_run0.sh:219-236`）：全量重扫 `results/sft/` 下
+**汇总已是 `evaluate_run0.sh` 的内置收尾步骤**（`evaluate_run0.sh:268-311`）：全量重扫 `results/sft/` 下
 **所有** EXP_ID 后重写表格 ⟹ 幂等、永远反映最新全貌，硬串行三阶段跑完自动得到完整对照表。
 🔴 与 eval 本身**解耦**：eval 失败也照写（保住已有结果），只告警 —— 用 `set +e` 包住，不影响退出码。
 
