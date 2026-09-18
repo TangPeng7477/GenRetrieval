@@ -432,6 +432,48 @@ MAX_SAMPLES=32 BATCH_SIZE=2 NUM_BEAMS=20 bash evaluate_run0.sh      # 实测 1m4
 > 反例（本该失败的样子）：不给 `SID_VOCAB_PATH`、把 `MODEL_PATH` 指回 `models/Qwen3-0.6B`，
 > 前置检查会直接拦下并打印正确命令（`tokenizer.json` 里没有 `<a_0>`）。已实测。
 
+#### 3.5.2 `[实测]` 恒 0 是不可证伪的 —— 补两道正对照（2026-09-18）
+
+§3.5.1 只证明了"生成 / 约束链"通。但 **HR/NDCG 全 0 有三种可能原因，光看结果分不出来**：
+
+| 可能原因 | 光看 `HR = 0` 能区分吗 |
+|---|---|
+| ① 模型没学到（预期） | ✗ |
+| ② `calc.py` 的指标算错 | ✗ |
+| ③ 结果 json 里的真值 `output` 写错 | ✗ |
+
+所以必须**用已知答案反推**。新增离线闸门（不需要 GPU、不需要重跑 eval）：
+
+```bash
+./.venv/Scripts/python.exe scripts/sft/verify_eval_chain.py --result-json results/sft/<EXP_ID>/eval_IandS_beam20_n32.json
+```
+
+**A 段 · 指标链**：造「已知名次」的合成结果喂给 `calc.py`，与**独立推出**的解析解逐点比对
+（判据不是"不为 0"，而是等于解析解，且覆盖未命中与排名边界）：
+
+| 合成变体（beam=20） | HR@1 | HR@3 | HR@5 | NDCG@1 | NDCG@3 | NDCG@5 |
+|---|---:|---:|---:|---:|---:|---:|
+| 全 rank-0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 |
+| 全 rank-2（0 基） | 0.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.5 |
+| 混合名次 {0,1,2,3} 各 1/4 | 0.25 | 0.75 | 1.0 | 0.25 | 0.5327 | 0.6404 |
+| 全未命中 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+`[实测]` 24 项全部与解析解在 **1e-12** 内一致；`CC` 的正对照（每样本塞 3 个不存在的 SID）
+精确得 **96 = 3 × 32**（若 `CC` 恒 0 则说明它根本没在统计）⟹ **② 排除**：`calc.py` 的
+HR/NDCG 是对的（含 `minID` 的 0 基边界、`1/ln2` 归一化、以及"未生成 = 不计"）。
+
+**B 段 · 真值闭环**：按 `evaluate.py:177` 的原参数实例化 `EvalSidDataset`
+（`max_len=2560 / test=True / K=0 / seed=42 / sample=N`），逐条核对 `output` 与 `history_str`
+（规矩：探针必须实例化真实类，不准手抄模板）。`[实测]` 32/32 **双向**一致，且真值全部命中
+`info/*.item_info.txt`（否则 `calc.py` 必然 match 不到）⟹ **③ 排除**。
+
+于是 dry-run 的 `HR = 0` **只能**归因于 ①，正是 §3.5 已论证的期望结果。
+
+> ⚠️ 踩坑记录：第一版用 `subprocess` 解析 `calc.py` 的 stdout，把"数值一致"误判成 FAIL ——
+> `calc.py` 用 numpy **默认 8 位小数**打印，解析回来就丢了精度。改成同进程调用 +
+> `np.set_printoptions(precision=17)` 后才是准的。**测量工具本身的精度也要核。**
+
+
 
 > 📁 **该锚点已作为一个正式版本落盘**（`RUN_TAG=untrained`），产物在
 > `results/sft/IandS-untrained/`，与训练后的结果同一套命名、可直接并列比较：
@@ -1294,5 +1336,5 @@ git show <commit>^:scripts/multimodal/probe_latent_rank.py      # 取回某个�
 | `scripts/sft/probe_rl_memory.py` | 本地显存逐块账本 | 本地 4GB 专用；上云不需要（结论在 §3.8/§3.10） |
 | `scripts/multimodal/probe_{alignment_methods,dataset_stats,fusion_rank,gate_twins,latent_rank,twin_sinkhorn}.py` | SID 阶段几何/数据诊断 | 结论已固化在 `SID_PIPELINE` / `DATASET` / `KNOWLEDGE_BASE` |
 
-**保留的三个**（都在链路上）：`probe_constrained_decoding.py`（`evaluate_run0.sh:112-118` 的硬闸门）、
-`verify_run0_registration.py`（Run-0 词表注册核验）、`baseline/scripts/probe_sequence_reconstruction.py`（baseline 复现树）。
+**保留的四个**（都在链路上）：`probe_constrained_decoding.py`（`evaluate_run0.sh:112-118` 的硬闸门）、
+`verify_run0_registration.py`（Run-0 词表注册核验）、`verify_eval_chain.py`（指标链 + 真值闭环，见 §3.5.2）、`baseline/scripts/probe_sequence_reconstruction.py`（baseline 复现树）。
