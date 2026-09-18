@@ -7,6 +7,9 @@
 #   CUDA=cu121 bash scripts/setup_env.sh   # 指定 CUDA 版本
 #   NO_VENV=1 bash scripts/setup_env.sh    # 用当前/系统 python，不建 venv
 #   SKIP_TORCH=1 bash scripts/setup_env.sh # 跳过 torch（平台已预装）
+#   SYS_SITE=0 bash scripts/setup_env.sh   # 不继承系统 site-packages
+#                                          # （默认：SKIP_TORCH=1 时自动继承，
+#                                          #  否则 venv 看不见平台预装的 torch）
 #   PIP_MIRROR=<url> bash scripts/setup_env.sh
 #
 # 实测: RTX 3090 / Ubuntu 22.04 / Python 3.11 → 约 2-4 分钟
@@ -35,15 +38,27 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "!! 找不到 $PYTHON_BIN"; e
 echo "==> Python: $("$PYTHON_BIN" -V)"
 
 # ---------- 1. 虚拟环境 ----------
+# SKIP_TORCH=1 时必须 --system-site-packages：默认 venv 是隔离的，看不见平台
+# 预装的 torch，随后装 requirements-core.txt 会被 peft 的 torch>=1.13.0 触发
+# 重新下一遍 2.5GB 的 torch —— 等于 SKIP_TORCH 白设。
+SYS_SITE="${SYS_SITE:-${SKIP_TORCH:-0}}"
 if [ "${NO_VENV:-0}" = "1" ]; then
   PIP="$PYTHON_BIN -m pip"
   echo "==> [1/4] 跳过 venv（NO_VENV=1）"
 else
   if [ ! -d .venv ]; then
-    echo "==> [1/4] 创建 .venv"
-    "$PYTHON_BIN" -m venv .venv
+    echo "==> [1/4] 创建 .venv（SYS_SITE=${SYS_SITE}）"
+    if [ "$SYS_SITE" = "1" ]; then
+      "$PYTHON_BIN" -m venv --system-site-packages .venv
+    else
+      "$PYTHON_BIN" -m venv .venv
+    fi
   else
     echo "==> [1/4] 复用已存在的 .venv"
+    if [ "$SYS_SITE" = "1" ]; then
+      echo "     !! 已存在的 .venv 未重建；若它不是 --system-site-packages 建的，"
+      echo "        先 rm -rf .venv 再重跑本脚本（否则读不到平台预装的 torch）"
+    fi
   fi
   # shellcheck disable=SC1091
   source .venv/bin/activate
@@ -53,7 +68,28 @@ fi
 
 # ---------- 2. PyTorch ----------
 if [ "${SKIP_TORCH:-0}" = "1" ]; then
-  echo "==> [2/4] 跳过 torch（SKIP_TORCH=1）"
+  echo "==> [2/4] 跳过 torch（SKIP_TORCH=1），沿用平台预装版本"
+  "$PYTHON_BIN" - <<'PYEOF' || exit 1
+import sys
+try:
+    import torch
+except ImportError:
+    print("!! 当前 python 里 import 不到 torch —— SKIP_TORCH=1 不可用")
+    print("   A) 平台预装的 torch 在别的解释器里：用 PYTHON_BIN=<那个 python> 重跑")
+    print("   B) 或者去掉 SKIP_TORCH=1，让它自己装（约 2.5GB）")
+    sys.exit(1)
+print(f"     torch={torch.__version__}  cuda={torch.version.cuda}  "
+      f"is_available={torch.cuda.is_available()}")
+# 按数字元组比，别按字符串比（"10.0" < "2.2" 在字符串比较下是 True）
+_core = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
+if _core < (2, 2):
+    print(f"!! torch {torch.__version__} < 2.2：transformers 4.57 官方只支持 >=2.2，"
+          f"建议改回 SKIP_TORCH=0")
+    sys.exit(1)
+if not torch.cuda.is_available():
+    print("!! torch 装的是 CPU 版 / 驱动不匹配，不能训练；改用 SKIP_TORCH=0 装 CUDA 版")
+    sys.exit(1)
+PYEOF
 else
   echo "==> [2/4] 安装 PyTorch ${TORCH_VER}+${CUDA}（约 2.5GB）"
   # torch/torchvision come from the pytorch index; their pure-python deps
@@ -78,7 +114,9 @@ import importlib.metadata as md
 import sys
 
 fails = []
-for name in ["torch", "torchvision", "numpy", "pandas", "scipy", "pyarrow",
+# torchvision 不在此列：项目代码没有 import 它（scripts/check_deps.py 也把它列为
+# KNOWN_EXCEPTIONS），SKIP_TORCH=1 时平台通常没预装，不能因此判环境不合格。
+for name in ["torch", "numpy", "pandas", "scipy", "pyarrow",
              "transformers", "trl", "peft", "accelerate", "datasets",
              "faiss", "ot", "bitsandbytes", "einops", "sklearn"]:
     try:

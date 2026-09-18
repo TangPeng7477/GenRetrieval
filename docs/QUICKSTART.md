@@ -37,9 +37,26 @@ bash scripts/setup_env.sh
 ```bash
 CUDA=cu121 bash scripts/setup_env.sh        # 换 CUDA 版本
 SKIP_TORCH=1 bash scripts/setup_env.sh      # 平台已预装 torch，跳过 2.5GB 下载
+SYS_SITE=0 bash scripts/setup_env.sh        # 关掉「venv 继承系统 site-packages」
 NO_VENV=1 bash scripts/setup_env.sh         # 直接用系统 python，不建 venv
 PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple bash scripts/setup_env.sh
 ```
+
+#### 平台已预装 torch 时（推荐，省掉 2.5GB 下载）
+
+```bash
+# 0) 先确认平台自带的是什么（必须是 CUDA 版，且 cuda.is_available() 为 True）
+python3 -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+
+# 1) 跳过 torch；脚本会自动用 --system-site-packages 建 venv 去继承它
+SKIP_TORCH=1 bash scripts/setup_env.sh
+```
+
+版本锁会偏离（本仓锁 `torch 2.6.0+cu118`）。已核过 PyPI 元数据的**硬约束**：
+`trl 0.24.0` 完全不锁 torch；`transformers 4.57.1` 只在 extras 里要求 `torch>=2.2`；
+`peft 0.14.0` 要求 `torch>=1.13.0` ⟹ **torch 2.5.1 满足全部硬约束**。
+脚本第 2 步会当场校验版本号与 `cuda.is_available()`，不满足直接 `exit 1`，
+不会带着坏环境往下走。⚠️ 用非 2.6.0 跑出的结果，要在 `docs/EXPERIMENT_LOG.md` 里记一笔 torch 版本。
 
 ### 1.2 云平台 / Linux —— 手动分步（等价于上面的脚本）
 
