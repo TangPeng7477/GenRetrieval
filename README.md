@@ -242,25 +242,21 @@ LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
 
 | 内容 | 体积 | 入 git？ | 上云方式 |
 |---|---:|:---:|---|
-| `data/Amazon23/<域>/sft/`（**见下方分层，只传 345 MB**） | 1.4 GB | ❌ | rsync 上传，`prompts/` 与 `tasks/` 可省（≈ 1.04 GB 训练用不上） |
-| ↳ 其中 `train/valid/test/*.csv` + `index/*.json` + `info/` | **345 MB** | ❌ | **训练端真正读的只有这些**（`[实测]` 逐目录 `du`） |
-| ↳ 其中 `prompts/{chatml,alpaca}/*.jsonl` | 910 MB | ❌ | **零消费方**，别传 |
-| ↳ 其中 `tasks/*.jsonl` | 133 MB | ❌ | 只有 `scripts/data/build_sft_prompts.py` 读，别传 |
+| `data/Amazon23/<域>/sft/` | 1.4 GB | ❌ | 只有 **345 MB** 需要传（见下行） |
+| ↳ `train/valid/test/*.csv` + `index/*.json` + `info/` | **345 MB** | ❌ | **训练端真正读的只有这些**（`[实测]` 逐目录 `du`） |
+| ↳ `prompts/`（910 MB）+ `tasks/`（134 MB） | ~~1.04 GB~~ | ❌ | 🗑️ **2026-09-18 已删**（预渲染明文，零消费方 → `SFT_PIPELINE §7.1`） |
 | `models/Qwen3-0.6B` | 1.5 GB | ❌ | **不用上传** —— 云端用脚本从 ModelScope 拉，比传更快 |
 | `results/sid_e5000/` | 0.9 GB | ❌ | 只有要在云端**重建 SFT 数据**时才需要；直接训练不需要 |
 | 代码 / 文档 / 脚本 | 很小 | ✅ | `git clone` 即可 |
 
 ```bash
-# ── 本地：只推训练真正要的（≈ 345 MB/域，省 1.04 GB）────────────────
-rsync -avP --relative --exclude=prompts --exclude=tasks \
+# ── 本地：只推训练真正要的（≈ 345 MB/域）───────────────────────────
+rsync -avP --relative \
   data/Amazon23/IandS/sft  user@<云主机>:~/GenRetrieval/
-rsync -avP --relative --exclude=prompts --exclude=tasks \
+rsync -avP --relative \
   data/Amazon23/VG/sft     user@<云主机>:~/GenRetrieval/          # 多域
-# 想连渲染稿一起传就去掉 --exclude（≈ 1.4 GB/域，训练用不上）
-# 先看会传什么：上面的命令加 --dry-run，结尾 | tail -5 看汇总
-#
-# ⚠️ --exclude 用**裸名**是有意的：rsync 的 * 不跨 /，写 '*/prompts' 反而匹配不到
-#    （实际路径是 data/Amazon23/IandS/sft/prompts）。传完 du -sh 应约 345 MB。
+# 2026-09-18 起不必再 --exclude：prompts/ 与 tasks/ 已从磁盘删除
+# 先看会传什么：上面的命令加 --dry-run。传完 du -sh 应约 345 MB。
 
 # ── 云端：克隆代码 + 建环境 ──────────────────────────────────────────
 git clone git@github.com:TangPeng7477/GenRetrieval.git && cd GenRetrieval
@@ -367,15 +363,14 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 ```
 
 - **编排**：`scripts/multimodal/run_sid_exp.sh`（I&S 实验矩阵）、`run_vg_sid.sh`（VG 全流程）
-- **诊断**：`scripts/multimodal/diag_collision.py`（碰撞组溯源 / 孪生 embedding 定位）、
-  `probe_gate_twins.py`（门控是否用上图像：A/B/C 三类细分）、
-  `probe_twin_sinkhorn.py`（孪生组在 raw/sk 下的存活账本）、
-  `probe_dataset_stats.py`（双域字段覆盖率 / 评分分布 / 长尾 / 冷启动）、
-  `probe_latent_rank.py`（融合向量与 latent 的有效秩 + L0 码本覆盖 → 死码溯源）、
-  `probe_alignment_methods.py`（跨模态「映射到同一语义空间」的方法对比 + 因素正交拆解：
-  降维 / 白化 / 映射族 / 检索空间 / 正则强度，含 `alpha`、`lambda` 扫描与 CCA 截断曲线。
-  **跨模态 R@10：现状 0.58/0.61 → 降维 0.72/0.80 → 再加白化 0.81/0.88**，
-  详见 `docs/UPGRADE_PLAN.md §4.6.3`）
+- **诊断**：`scripts/multimodal/diag_collision.py`（碰撞组溯源 / 孪生 embedding 定位）
+- 🗑️ **SID 阶段的 6 个探针已删**（2026-09-18，零消费方；清单与取回办法 → `docs/SFT_PIPELINE.md §7.1`）。
+  它们产出的**结论仍然有效**，分别留在：
+  `probe_gate_twins`（门控 A/B/C 细分）/ `probe_dataset_stats`（覆盖率·长尾·冷启动）→ `docs/DATASET.md`；
+  `probe_twin_sinkhorn`（孪生组存活账本）/ `probe_latent_rank`（latent 谱 → 死码溯源）→ `docs/SID_PIPELINE.md`；
+  `probe_latent_rank` / `probe_gate_twins` 的死码部分 → `docs/KNOWLEDGE_BASE.md`；
+  `probe_alignment_methods`（跨模态映射族正交拆解，
+  **R@10：0.58/0.61 → 降维 0.72/0.80 → 加白化 0.81/0.88**）→ `docs/UPGRADE_PLAN.md §4.6.3`
 - **环境**：`scripts/setup_env.sh` | `setup_env.ps1`、`download_models.sh`、`tools/hf_repair_cache.py`
 - **被直接 import 的上游文件**（复制自 MiniOneRec 但在用）：`rq/datasets.py`（EmbDataset）、
   `rq/rqkmeans_faiss.py`（FAISS-RQ 量化器）、`rq/models/{rqvae,rq,vq,layers}.py`
@@ -559,7 +554,7 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 | **T3 `seq2title`** | 历史 SID → 目标标题 | 同 T1 |
 | **T4 `text2sid`**（新增） | `title+brand+categories+features` → SID | 25,847 / 25,611 |
 
-### 8.3 体检实测（`scripts/data/verify_sft_data.py`，`data/Amazon23/sft_verify.json`）
+### 8.3 体检实测（原 `scripts/data/verify_sft_data.py` 与 `sft_verify.json` 已于 2026-09-18 移除，数字为当时实测）
 
 | 检查项 | IandS | VG |
 |---|---:|---:|
@@ -573,26 +568,37 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 → 训练端**不是"一行不用改"**：`sft.py` 已改 3 处（词表注册 / `padding_side` / `torch_compile`），
    `requirements-core.txt` 补了 `fire`。完整清单见 [SFT_PIPELINE §4.6](docs/SFT_PIPELINE.md)。
 
-### 8.4 明文 prompt 渲染（`scripts/data/build_sft_prompts.py`，双格式）
+### 8.4 提示词模板：单一真源（2026-09-18 收敛）
 
-§8.2 的产物是结构化中间态，`build_sft_prompts.py` 再渲染成**明文 prompt**，双格式各一套：
+模板不再散落在代码里 —— 真源是 `config/prompt_templates.json`，读取入口是 `prompt_templates.py`
+（`data.py` / `evaluate.py` / `minionerec_trainer.py` 都经它取），建数据时把 config 拷成
+`<域>/sft/info/prompt_templates.json` 快照（旧数据用它建时的口径，不会被后来的改动污染）。三种格式：
 
 | 格式 | 形态 | 用途 |
 |---|---|---|
-| **`chatml`** | `<\|im_start\|>system/user/assistant` | **主榜 Run-0**：Qwen3 原生格式，与预训练一致 |
-| `alpaca` | `### Instruction / ### User Input / ### Response` | 格式消融对照（非为比 V0） |
+| **`chatml`（默认）** | `<\|im_start\|>system/user/assistant` | **主榜 Run-0**：Qwen3 原生格式，与预训练一致 |
+| `alpaca` | `### Instruction / ### User Input / ### Response` | 格式消融对照（非为比 V0）。**V0 用的就是它** |
+| `verbatim` | 同 alpaca 但带引号 | MiniOneRec 逐字复刻，只用于交叉校验 |
 
-口径（2026-09-14 定版）：
+**格式消融 = 一个环境变量**：`PROMPT_FORMAT=alpaca bash sft_run0.sh`
+（训练端与评估端都走同一模块，自动一致；**不再需要预渲染数据集**）。
 
-- **所有引号一律去掉**，SID / title / text 全裸写 —— `<a_5>` 的尖括号本身是定界符，
-  且 completion 里带引号会让 Trie 约束解码的首 token 变成 `"` 而不是 `<a_*>`
-- **completion 末尾不加 `\n`** —— MiniOneRec 原文有，但在 Trie 下必被 −inf 屏蔽，是死权重
-- completion 不含 EOS（训练端 `encode(eos=True)` 追加）
+口径（2026-09-18 定版）：
+
+- **所有引号一律去掉**，SID / title / text 全裸写 —— `<a_5>` 的尖括号本身就是定界符，
+  且 completion 带引号会让 Trie 约束解码的首 token 变成 `"` 而不是 `<a_*>`；
+  带引号版本降级为 `verbatim`，只用于校验
+- **completion 尾哨兵保留 `\n`** ⟹ T1 目标 = `[a,b,c,\n,<|im_end|>]` **5 token**。
+  ⚠️ 2026-09-14 曾记"completion 末尾不加 `\n`"，**那句与实际训练 target 不符，已作废**：
+  Trie 的 step3 就是"只允许 `\n`"、step4"只允许 EOS"，去掉 `\n` 约束表就对不上
+- completion 落盘不含 EOS（训练端 `encode(eos=True)` 追加）
 - T1 的 input 保留 instruction 原句重复（去掉后指令不够明确）；history 一律用 SID 序列
 
-**逐 token 校验**：用 MiniOneRec 三个 Dataset 类生成 ground truth，与"verbatim 复刻版"逐 id 比对，
-要求 0 差异（报告 `data/Amazon23/sft_prompts_verify.json`）。
+**逐 token 校验**（当时的做法，脚本已删）：用 MiniOneRec 三个 Dataset 类生成 ground truth，
+与 verbatim 复刻版逐 id 比对，要求 0 差异。
 `[实测]` 双域各抽 100 条：T1 100/100、T2a 49/49、T2b 51/51、T3 100/100 **全部逐 token 一致**。
+2026-09-18 换成 chatml 后又复做了一遍等价校验：`data.py` 7 个在用 Dataset 类 decode 出的 prompt
+全部正确（BAD=0），RL 三个文本类末尾也都等于响应前缀。
 
 `[实测]` 全量长度（双域 × 双格式，共 173 万条）：
 
@@ -617,9 +623,8 @@ SID 定版为语义桶，一个 SID 可能对应 2~5 个物品（I&S 碰撞 7.92
 ```bash
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain IandS   # ~24 s
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain VG      # ~35 s
-./.venv/Scripts/python.exe scripts/data/verify_sft_data.py  --domain all
-# 明文 prompt 渲染（可选；训练端暂未消费，见 SFT_PIPELINE §3.2）
-./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all --verify
+# 体检（verify_sft_data.py）与明文渲染（build_sft_prompts.py）两个脚本已于 2026-09-18 删除；
+# 模板相关的一切现在由 config/prompt_templates.json + prompt_templates.py 承担，见 §8.4 与 SFT_PIPELINE §3.1
 ```
 
 ### 8.7 训练 / 评估入口（2026-09-16）

@@ -44,10 +44,9 @@ KNOWN_EXCEPTIONS = {
 DEFAULT_TARGETS = [
     "sft.py", "evaluate.py", "data.py", "calc.py", "LogitProcessor.py",
     "utility.py", "minionerec_trainer.py", "sasrec.py",
+    "prompt_templates.py",
     "scripts/sft/*.py",
     "scripts/data/prepare_sft_data.py",
-    "scripts/data/verify_sft_data.py",
-    "scripts/data/build_sft_prompts.py",
     "rq/models/rqvae.py",
 ]
 

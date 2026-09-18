@@ -1,32 +1,86 @@
 {
- "alpaca_header": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. \n\n### Instruction:\n",
- "tasks": {
-  "seq2sid": {
-   "instruction": "Can you predict the next possible item that the user may expect?",
-   "input": "The user has interacted with items {hist} in chronological order. Can you predict the next possible item that the user may expect?",
-   "output": "{target}",
-   "hist_sep": ", "
+  "schema_version": 2,
+  "note": "单一真源。data.py 运行时、build_sft_prompts.py 渲染、evaluate.py / minionerec_trainer.py 的约束解码 key 全部由 prompt_templates.py 读本文件得到。改提示词只改这里。prepare_sft_data.py 只负责把它拷进 data/.../sft/info/。",
+  "default_format": "chatml",
+  "system_msg": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.",
+  "formats": {
+    "chatml": {
+      "kind": "chat",
+      "system_prefix": "<|im_start|>system\n",
+      "system_suffix": "<|im_end|>\n",
+      "user_prefix": "<|im_start|>user\n",
+      "user_suffix": "<|im_end|>\n",
+      "user_body": "{instruction}\n\n{input}",
+      "assistant_prefix": "<|im_start|>assistant\n",
+      "note": "Qwen3 原生对话标记。prompt 末尾必须恰为 assistant_prefix（实测 3 token）。"
+    },
+    "alpaca": {
+      "kind": "flat",
+      "header": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. \n\n### Instruction:\n",
+      "body": "{instruction}\n\n### User Input: \n{input}\n\n### Response:\n",
+      "note": "MiniOneRec 的 ### 骨架 + 本项目定版裸写口径。"
+    },
+    "verbatim": {
+      "kind": "flat",
+      "header": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. \n\n### Instruction:\n",
+      "body": "{instruction}\n\n### User Input: \n{input}\n\n### Response:\n",
+      "note": "MiniOneRec 逐字版。与定版的差异**只有** sid2title 的 input 带双引号（正文里 T1 的 instruction 重复是两版共有的）。只用于 --verify 对齐上游。"
+    }
   },
-  "sid2title": {
-   "instruction": "Answer the question about item identification.",
-   "input": "What is the title of item \"{sid}\"?",
-   "output": "{title}"
+  "response_prefix": {
+    "chatml": "<|im_start|>assistant\n",
+    "alpaca": "### Response:\n",
+    "verbatim": "### Response:\n"
   },
-  "title2sid": {
-   "instruction": "Answer the question about item identification.",
-   "input": "Which item has the title: {title}?",
-   "output": "{sid}"
+  "completion": {
+    "sid_sentinel": "\n",
+    "eos_token": "<|im_end|>",
+    "note": "监督段 = [3 个 SID] + sid_sentinel + eos_token ⟹ 每示例 5 token。🔴 Trie 的 step3 只放 sid_sentinel、step4 只放 eos ⟹ 这两个不能改。（2026-09-18 定：build_sft_prompts.py 早期注释里『定版去掉末尾 \\n』已作废，因为约束解码依赖它。）"
   },
-  "seq2title": {
-   "instruction": "Can you recommend the next item for the user based on their interaction history?",
-   "input": "The user has sequentially interacted with items {hist}. Can you recommend the next item for him? Tell me the title of the item",
-   "output": "{title}",
-   "hist_sep": ", "
-  },
-  "text2sid": {
-   "instruction": "Answer the question about item identification.",
-   "input": "An item can be described as follows: \"{text}\". Which item is it describing?",
-   "output": "{sid}"
+  "tasks": {
+    "seq2sid": {
+      "output": "{target}",
+      "hist_sep": ", ",
+      "instruction": "Can you predict the next possible item that the user may expect?",
+      "input": "The user has interacted with items {hist} in chronological order. Can you predict the next possible item that the user may expect?",
+      "target": "sid",
+      "verbatim_input": null
+    },
+    "sid2title": {
+      "output": "{title}",
+      "instruction": "Answer the question about item identification.",
+      "input": "What is the title of item {sid}?",
+      "target": "title",
+      "verbatim_input": "What is the title of item \"{sid}\"?"
+    },
+    "title2sid": {
+      "output": "{sid}",
+      "instruction": "Answer the question about item identification.",
+      "input": "Which item has the title: {title}?",
+      "target": "sid",
+      "verbatim_input": null
+    },
+    "seq2title": {
+      "output": "{title}",
+      "hist_sep": ", ",
+      "instruction": "Can you recommend the next item for the user based on their interaction history?",
+      "input": "The user has sequentially interacted with items {hist}. Can you recommend the next item for him? Tell me the title of the item",
+      "target": "title",
+      "verbatim_input": null
+    },
+    "text2sid": {
+      "output": "{sid}",
+      "instruction": "Answer the question about item identification.",
+      "input": "An item can be described as follows: {text}. Which item is it describing?",
+      "target": "sid",
+      "verbatim_input": null
+    },
+    "seqtitle2sid": {
+      "output": "{sid}",
+      "instruction": "Can you recommend the next item for the user based on their interaction history?",
+      "input": "Given the title sequence of user historical interactive items: {hist}, can you recommend a suitable next item for the user?",
+      "target": "sid",
+      "verbatim_input": null
+    }
   }
- }
 }

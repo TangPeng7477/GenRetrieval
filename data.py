@@ -8,6 +8,13 @@ import random
 from tqdm import tqdm
 import os
 import copy
+import sys as _sys
+# 🔴 提示词模板的**唯一读取入口**（真源 = config/prompt_templates.json；config 会被
+#    prepare_sft_data.py 拷进每个域的 <sft>/info/ 作为口径快照）。2026-09-18 收敛：
+#    此前同一套模板在 data.py / prepare_sft_data.py / build_sft_prompts.py 各有一份，
+#    改一处忘一处就是静默漂移（SFT_PIPELINE §6.4(5) 当时只记了其中两处）。
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import prompt_templates as pt
 import torch.nn.functional as F
 
 class Tokenizer:
@@ -49,6 +56,9 @@ class BaseDataset(Dataset):
         self.max_len = max_len
         self.category = category
         self.dedup = dedup
+        # 模板锚点（默认 None = 用仓库 config/prompt_templates.json）。
+        # 子类在拿到数据路径后覆盖它，以便优先用 <sft>/info/ 里的口径快照。
+        self.data_path = None
 
     def __len__(self):
         return len(self.data)
@@ -89,6 +99,9 @@ class CSVBaseDataset(BaseDataset):
         super().__init__(tokenizer, max_len, test, category, dedup, seed)
 
         self.data = pd.read_csv(train_file)
+        # 模板锚点：优先用 <sft>/info/prompt_templates.json（建数据时的口径快照），
+        # 这样旧数据不会被后来的模板改动污染；取不到才退回仓库 config/。
+        self.data_path = train_file
         
         if sample > 0:
             self.data = self.data.sample(sample, random_state=seed)
@@ -103,6 +116,7 @@ class JSONBaseDataset(BaseDataset):
             self.item_feat = json.load(f)
         with open(index_file, 'r') as f:
             self.indices = json.load(f)
+        self.data_path = item_file or index_file
 
 
 class SFTData(CSVBaseDataset):
@@ -372,7 +386,7 @@ class SidDataset(CSVBaseDataset):
         target_item = str(row['item_sid'])
         target_item_sid = row["item_sid"]
         last_history_item_sid = row['history_item_sid'][-1] if row['history_item_sid'] else None
-        return {"input": f"The user has interacted with items {history} in chronological order. Can you predict the next possible item that the user may expect?",
+        return {"input": pt.task_input("seq2sid", anchor=self.data_path, hist=history),
                 # Analyze user preferences and then predict the semantic ID of the next item.
                 "output": target_item + "\n",
                 "history_str": history_str,
@@ -383,7 +397,8 @@ class SidDataset(CSVBaseDataset):
         target_item = history['output']
         history['output'] = ''
            
-        prompt = self.generate_prompt(history)
+        # 🔴 模板真源渲染（末尾停在 response_prefix 上）
+        prompt = pt.render("seq2sid", anchor=self.data_path, hist=history["history_str"])
         self.prompt2history[prompt] = history["history_str"]
         self.history2target[history["history_str"]] = target_item
         
@@ -413,34 +428,21 @@ class SidSFTDataset(CSVBaseDataset):
         target_item = str(row['item_sid'])
         target_item_sid = row["item_sid"]
         last_history_item_sid = row['history_item_sid'][-1] if row['history_item_sid'] else None
-        return {"input": f"The user has interacted with items {history} in chronological order. Can you predict the next possible item that the user may expect?",
+        return {"input": pt.task_input("seq2sid", anchor=self.data_path, hist=history),
                 "output": target_item + "\n",
                 "history_str": history_str,
                 "dedup": target_item_sid == last_history_item_sid}
     
     def pre(self, idx):
-        instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-### Instruction:
-Can you predict the next possible item that the user may expect?
-
-"""
-        tokens = self.tokenizer.encode(instruction, bos=True, eos=False)
-        
         history = self.get_history(self.data.iloc[idx])
-        # print("**********************")
         # print("history: ", history)
         target_item = history['output']
-        history['output'] = ''
-        negative_prompt_ids = copy.deepcopy(tokens)
-        
-        prompt = self.generate_prompt(history)
-        # print("prompt: ", prompt)
-
-        tokens = tokens + self.tokenizer.encode(prompt, bos=False, eos=False)
-        # print("tokens: ", tokens)
-        # print("**********************")
-        history["input"] = ""
+        # 🔴 prompt 由模板真源渲染，不再用本文件里硬编码的 instruction 块 + generate_prompt
+        #    —— 那正是"3 份模板实现"漂移的来源之一。
+        #    末尾必然停在 response_prefix（chatml = '<|im_start|>assistant\n'，实测 3 token）。
+        prompt = pt.render("seq2sid", anchor=self.data_path, hist=history["history_str"])
+        negative_prompt_ids = None
+        tokens = self.tokenizer.encode(prompt, bos=False, eos=False)
         
         attention_mask = [1] * len(tokens)
         
@@ -626,31 +628,20 @@ class EvalSidDataset(CSVBaseDataset):
         # 用的都是下面这句 -> train/eval prompt 不一致，直接损害评估指标。
         # 实测（scripts/sft/probe_constrained_decoding.py）两者共同前缀仅 49 token、
         # 长度差 4，指令部分相同所以模型能部分泛化、不会崩到 0。已统一回训练端口径。
-        return {"input": f"The user has interacted with items {history} in chronological order. Can you predict the next possible item that the user may expect?",
+        return {"input": pt.task_input("seq2sid", anchor=self.data_path, hist=history),
                 "output": target_item + '\n',
+                "history_str": history,
                 "dedup": target_item_sid == last_history_item_sid}
     
     
     def pre(self, idx):
-        instruction =  f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-### Instruction:
-Can you predict the next possible item that the user may expect?
-
-"""
-        tokens = self.tokenizer.encode(instruction, bos=True, eos=False)
-        
         history = self.get_history(self.data.iloc[idx])
         target_item = history['output']
-        history['output'] = ''
-        negative_prompt_ids = copy.deepcopy(tokens)
-        
-                
-           
-        prompt = self.generate_prompt(history)
-
-        tokens = tokens + self.tokenizer.encode(prompt, bos=False, eos=False)
-        history["input"] = ""
+        # 🔴 与训练端同一真源渲染 ⟹ train/eval prompt 天然一致。
+        #    原版这里被单独换成过另一句（train/eval 漂移），2026-09-16 已修，现由真源根治。
+        prompt = pt.render("seq2sid", anchor=self.data_path, hist=history["history_str"])
+        negative_prompt_ids = None
+        tokens = self.tokenizer.encode(prompt, bos=False, eos=False)
         
         attention_mask = [1] * len(tokens)
         
@@ -736,35 +727,19 @@ class SidItemFeatDataset(JSONBaseDataset):
             self.get_inputs()
 
     def generate_prompt(self, data_point):
-        if data_point['task'] == 'title2sid':
-            prompt = f"Which item has the title: {data_point['input']}?"
-            response = data_point['output']
-        else:  # sid2title
-            prompt = f'What is the title of item "{data_point["input"]}"?'
-            response = data_point['output']
-        
-        return f"""### User Input: 
-{prompt}
-
-### Response:\n"""
+        """T2a/T2b 共用：按 data_point['task'] 取对应任务模板（sid2title / title2sid）。"""
+        task = data_point["task"]
+        field = "sid" if task == "sid2title" else "title"
+        return pt.render(task, anchor=self.data_path, **{field: data_point["input"]})
     
     def pre(self, idx):
         if self.tokenizer is None:
             return self.data[idx]
         
-        instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-### Instruction:
-Answer the question about item identification.
-
-"""
-        tokens = self.tokenizer.encode(instruction, bos=True, eos=False)
-        
         data_point = self.data[idx]
-        
         prompt = self.generate_prompt(data_point)
         # print("sidfeature prompt: ", prompt)
-        tokens = tokens + self.tokenizer.encode(prompt, bos=False, eos=False)
+        tokens = self.tokenizer.encode(prompt, bos=False, eos=False)
         attention_mask = [1] * len(tokens)
         
         if self.test:
@@ -865,17 +840,10 @@ class RLTitle2SidDataset(JSONBaseDataset):
 
     
     def generate_prompt(self, data_point):
-        if data_point['task'] == 'title2sid':
-            prompt = f"Which item has the title: {data_point['input']}?"
-            response = data_point['output']
-        else:  # description2sid
-            prompt = f"An item can be described as follows: \"{data_point['input']}\". Which item is it describing?"
-            response = data_point['output']
-        
-        return f"""### User Input: 
-{prompt}
-
-### Response:\n"""
+        """RL 侧：title / description -> SID。"""
+        task = "title2sid" if data_point["task"] == "title2sid" else "text2sid"
+        field = "title" if task == "title2sid" else "text"
+        return pt.render(task, anchor=self.data_path, **{field: data_point["input"]})
     
     def pre(self, idx):
         data_point = self.data[idx]
@@ -913,7 +881,7 @@ class RLSeqTitle2SidDataset(CSVBaseDataset):
         self.get_inputs()
     
     def generate_prompt(self, inter_titles):
-        return f"Given the title sequence of user historical interactive items: {inter_titles}, can you recommend a suitable next item for the user?"
+        return pt.task_input("seqtitle2sid", anchor=self.data_path, hist=inter_titles)
     
     def get_history(self, row):
         # Parse history_item_title field
@@ -943,10 +911,8 @@ class RLSeqTitle2SidDataset(CSVBaseDataset):
         }
     
     def generate_formatted_prompt(self, prompt, response):
-        return f"""### User Input: 
-{prompt}
-
-### Response:\n"""
+        """prompt 已是构造好的 input 文本 ⟹ 只做骨架包裹。"""
+        return pt.wrap_input("seqtitle2sid", prompt, anchor=self.data_path)
     
     def pre(self, idx):
         history_data = self.get_history(self.data.iloc[idx])
@@ -1150,6 +1116,7 @@ class FusionSeqRecDataset(BaseDataset):
         
         # Initialize CSV part
         self.data = pd.read_csv(train_file)
+        self.data_path = train_file
         if sample > 0:
             self.data = self.data.sample(sample, random_state=seed)
         
@@ -1232,7 +1199,7 @@ class FusionSeqRecDataset(BaseDataset):
             return title
     
     def generate_prompt_title(self, history):
-        return f"The user has sequentially interacted with items {history}. Can you recommend the next item for him? Tell me the title of the item"
+        return pt.task_input("seq2title", anchor=self.data_path, hist=history)
     
     def generate_prompt_description(self, history):
         return f"Please review the user's historical interactions: {history}, and describe what kind of item he still needs."
@@ -1274,42 +1241,23 @@ class FusionSeqRecDataset(BaseDataset):
         }
     
     def generate_formatted_prompt(self, prompt, response):
-        return f"""### User Input: 
-{prompt}
-
-### Response:\n"""
+        return pt.wrap_input("seq2title", prompt, anchor=self.data_path)
     
     def pre(self, idx):
-        instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-### Instruction:
-Can you recommend the next item for the user based on their interaction history?
-
-"""  
-        tokens = self.tokenizer.encode(instruction, bos=True, eos=False)
-        
         history_data = self.get_history(self.data.iloc[idx])
-        
+
         # Skip if duplicate and dedup is enabled
         if self.dedup and history_data['dedup']:
             return None
-        
-        # Randomly choose between title and description tasks
-        """if random.random() < 0.5:
-            # Title task
-            prompt = self.generate_prompt_title(history_data['history_str'])
-            target = history_data['target_title'] + '\n'
-        else:
-            # Description task
-            prompt = self.generate_prompt_description(history_data['history_str'])
-            target = history_data['target_description'] + '\n'
-        """
-        prompt = self.generate_prompt_title(history_data['history_str'])
+
+        # 🔴 模板真源渲染（原版这里是 instruction 块 + generate_prompt_title +
+        #    generate_formatted_prompt 三处硬编码拼接）
+        prompt_input = self.generate_prompt_title(history_data['history_str'])
+        prompt = self.generate_formatted_prompt(prompt_input, "")
         target = history_data['target_title'] + '\n'
         # print("fusion prompt: ", prompt)
 
-        formatted_prompt = self.generate_formatted_prompt(prompt, "")
-        tokens = tokens + self.tokenizer.encode(formatted_prompt, bos=False, eos=False)
+        tokens = self.tokenizer.encode(prompt, bos=False, eos=False)
         attention_mask = [1] * len(tokens)
         
         if self.test:

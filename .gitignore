@@ -57,7 +57,9 @@ data/**/*.faiss
 !ts_rec_data/*.json
 
 # SFT 数据集（2026-09-14 新增，~1GB，全部可由 scripts/data/prepare_sft_data.py 重建）
-#   tracked : sft/stats.json ／ sft/info/{sid_vocab,prompt_templates}.json ／ data/Amazon23/sft_verify.json
+#   tracked : sft/stats.json ／ sft/info/{sid_vocab,prompt_templates}.json
+#             （prompt_templates.json 是 config/ 的**快照**，由 prepare_sft_data.py 拷入；
+#               原 data/Amazon23/sft_verify.json 与 sft_prompts_verify.json 已于 2026-09-18 删除）
 #   ignored : 其余（train/valid/test CSV、index json、tasks jsonl、item_info.txt、sid2items.json、codebook.npy）
 # ⚠️ 不要写 data/Amazon23/*/sft/** —— 那会把 info/ 目录本身排除掉，
 #    导致下面对 info/ 内文件的 `!` 反选失效（git 不回溯被排除的目录）。

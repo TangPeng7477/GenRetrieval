@@ -87,7 +87,7 @@ RL 的约束生成**与 `evaluate.py` 同源**：两者都从 `info_file` 第 1 
 **建表**（`minionerec_trainer.py:529-572`，ReReTrainer `__init__`）：
 
 ```
-info_file 每行 -> split('\t')[0] + "\n" -> 前置 "### Response:\n"
+info_file 每行 -> split('\t')[0] + "\n" -> 前置**响应前缀**（pt.response_prefix()，默认 chatml = <|im_start|>assistant\n）
               -> tokenizer(...) -> prefixID
 对每个 prefixID：append(eos)，然后 i 从 prefix_index=3 到末尾：
     key = hash(ID[:3])            (i==3)      -> value = ID[3]
@@ -101,12 +101,18 @@ if self.count == 0:  hash_key = sent[-self.prefix_index:]   # 只取 prompt 末 
 else:                hash_key = sent[-self.count:]          # 倒数 count 个
 ```
 
-⟹ 长 prompt 不影响：**只要 prompt 末尾恰好是 `### Response:\n`**。
+⟹ 长 prompt 不影响：**只要 prompt 末尾恰好是响应前缀**。默认 chatml 的
+`<|im_start|>assistant\n` = `[151644, 77091, 198]`，alpaca 的 `### Response:\n` = `[14374, 5949, 510]`
+—— **两者都恰好 3 个 token**，所以 `prefix_index=3` 两种格式都成立。
+前缀一律从 `pt.response_prefix()` 取（`minionerec_trainer.py:536-537`），**不准手抄**。
 而 `minionerec_trainer.py:675-678` 用的是
 `maybe_apply_chat_template`（我们的输入是纯字符串、非 conversational ⟹ **不套 chat template**）
 + `add_special_tokens=False`，所以不会被追加尾 token。两条合起来前提成立。
 
-### 3.1 探针实测（`scripts/sft/probe_rl_constraint_map.py`）
+### 3.1 探针实测（原 `scripts/sft/probe_rl_constraint_map.py`，**已于 2026-09-18 移除**）
+
+⚠️ 下列数字是 **alpaca 口径**时的输出。换成 chatml 后前缀 token 变成 `[151644, 77091, 198]`，
+但**结构与候选数完全不变** —— 已由 `probe_constrained_decoding.py` 在 chatml 下复验（`[256,98,1,1,1]`）。
 
 ```
 1. prefix_index = 3 的前提
@@ -142,7 +148,8 @@ else:                hash_key = sent[-self.count:]          # 倒数 count 个
 
 ⟹ 与 `SFT_PIPELINE §3.4` 里 `evaluate.py` 的 Trie（5 步 `[256, 98, 1, 1, 1]`）**结构同构**。
 ⚠️ `prefix_index=3` 是 `minionerec_trainer.py` 与 `LogitProcessor.py` **两处硬编码**，
-换基座 / 换 tokenizer 必须重跑该探针。
+换基座 / 换 tokenizer 必须重测「响应前缀是否恰好 3 token」——
+跑 `scripts/sft/probe_constrained_decoding.py` 的 C 段（原 `probe_rl_constraint_map.py` 已删）。
 
 ---
 
@@ -340,7 +347,7 @@ step 0 时 adapter 输出恒为 0 ⟹ 策略与参考模型**逐位相同**，KL
 | `rl.py` | `:73` | 新增 `--torch_compile`（默认 **False**） | 原版硬编码 `True`；GRPO 每步生成长度不定 + 动态 padding 会反复重编译（SFT 侧已实测这个坑） |
 | `rl.py` | `:77-78` | 新增 `--save_steps` / `--save_total_limit`（默认 0.1 / **3**） | 原版 20 会占 ~120 GB 磁盘 |
 | `rl.py` | `:80` | 新增 `--optim`（默认 `paged_adamw_32bit`） | 参数化，便于本地/云端切换 |
-| `rl.py` | `:91-113` | **新增前置护栏**：`<a_0>` 必须 1 token、`### Response:\n` 必须 3 token | 指回原始基座会静默崩（SID 碎裂 + 约束映射全废）；换 tokenizer 会让 `prefix_index=3` 失效 |
+| `rl.py` | `:91-113` | **新增前置护栏**：`<a_0>` 必须 1 token、**响应前缀必须 3 token**（取自 `pt.response_prefix()`，默认 chatml） | 指回原始基座会静默崩（SID 碎裂 + 约束映射全废）；换 tokenizer 会让 `prefix_index=3` 失效 |
 | `rl.py` | `:185-201` | 奖励 artifact 缺失时**报错**；修掉无条件误导日志 | 原版会抛 `KeyError`/`NameError`，看不出根因 |
 | `rl_run0.sh` | 新增 | RL 入口：EXP_ID 命名 / 前置检查 / venv 探测 / 写 `run.meta.json` | 对齐 `sft_run0.sh`；原两个 `.sh` 路径不可用 |
 | `rl.py` | `--use_lora` 等 6 个参数 | **新增 LoRA**（本文件原本完全不支持）：`--use_lora/--lora_r/--lora_alpha/--lora_dropout/--lora_targets/--lora_modules_to_save`。传 `peft_config` 给 `ReReTrainer`（不预 wrap），由它 `get_peft_model` 并把 `ref_model` 置 None | 本地 4GB 唯一可行路径；UPGRADE_PLAN §5.2 的双轨 |

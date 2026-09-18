@@ -7,6 +7,7 @@ import os
 from transformers import GenerationConfig,  AutoTokenizer, BitsAndBytesConfig, AutoModelForCausalLM, LogitsProcessorList, TemperatureLogitsWarper
 from data import  EvalD3Dataset, EvalSidDataset
 from LogitProcessor import ConstrainedLogitsProcessor
+import prompt_templates as pt   # 提示词/响应前缀的唯一真源
 from accelerate import Accelerator
 import random
 import bitsandbytes as bnb
@@ -78,8 +79,10 @@ def main(
         item_titles = [line.split('\t')[1].strip() + "\n" for line in info if len(line.split('\t')) >= 2]
         
         # Format for tokenization
-        info_semantic = [f'''### Response:\n{_}''' for _ in semantic_ids]
-        info_titles = [f'''### Response:\n{_}''' for _ in item_titles]
+        # 🔴 约束解码的 key 前缀必须与 data.py 渲染的 prompt 末尾**同一个真源**
+        #    （chatml = '<|im_start|>assistant\n'，实测 3 token ⟹ prefix_index=3 成立）。
+        info_semantic = [pt.response_prefix(anchor=info_file) + _ for _ in semantic_ids]
+        info_titles = [pt.response_prefix(anchor=info_file) + _ for _ in item_titles]
 
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)

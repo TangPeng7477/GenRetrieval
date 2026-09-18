@@ -11,7 +11,7 @@
      —— 验证 prefix_index=3 的假设，以及与训练目标 [a,b,c,\n,EOS] 的对应。
 
   C. evaluate.py 用的裸 tokenizer（add_special_tokens 默认 True）与 data.py 的
-     Tokenizer.encode（同样默认）在 "### Response:\n" 上切分是否一致？
+     Tokenizer.encode（同样默认）在响应前缀（模板真源给出）上切分是否一致？
      —— prefix_index 是硬编码常量，两边切分不同就会静默错位。
 
 用法：
@@ -26,6 +26,9 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+
+import prompt_templates as pt   # 响应前缀唯一真源（不再手抄 '### Response:\n'）
+RPREFIX = pt.response_prefix()  # 当前生效格式的响应前缀；默认 chatml = '<|im_start|>assistant\n'
 
 PASS, FAIL = "PASS", "FAIL"
 _fail = 0
@@ -83,7 +86,7 @@ def build_hash_dict(tokenizer, info_path, prefix_index=3):
     with open(info_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     semantic_ids = [ln.split("\t")[0].strip() + "\n" for ln in lines]
-    info_semantic = [f"### Response:\n{_}" for _ in semantic_ids]
+    info_semantic = [RPREFIX + _ for _ in semantic_ids]
     prefixID = [tokenizer(_).input_ids for _ in info_semantic]
 
     hash_dict = {}
@@ -184,8 +187,8 @@ def main():
     for tag, ids in (("训练端", tr_ids), ("评估端", ev_ids)):
         tail = ids[-3:]
         print(f"  {tag} prompt 末 3 token: {tail} -> {tok.decode(tail)!r}")
-    tail_ok = ev_ids[-3:] == enc(tok, "### Response:\n", False, False)
-    check("评估端末尾 == '### Response:\\n'", f"{ev_ids[-3:]}", tail_ok)
+    tail_ok = ev_ids[-3:] == enc(tok, RPREFIX, False, False)
+    check("评估端末尾 == 响应前缀(模板真源)", f"{ev_ids[-3:]}", tail_ok)
 
     # ---------------------------------------------------------------- B
     print("\n" + "-" * 78)
@@ -231,9 +234,9 @@ def main():
 
     # ---------------------------------------------------------------- C
     print("\n" + "-" * 78)
-    print("C. prefix_index=3 的前提：'### Response:\\n' 的切分")
+    print(f"C. prefix_index=3 的前提：响应前缀 {RPREFIX!r} 的切分")
     print("-" * 78)
-    s = "### Response:\n"
+    s = RPREFIX
     a = tok(s).input_ids                      # evaluate.py 用法（默认 add_special_tokens=True）
     b = tok.encode(s, add_special_tokens=False)
     c = enc(tok, s, bos=False, eos=False)     # data.py Tokenizer.encode

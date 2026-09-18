@@ -148,15 +148,18 @@ def train(
             f"  正确用法: --model_path outputs/<SFT_EXP_ID>/final_checkpoint\n"
             f"  指回原始基座会让 SID 碎裂、约束映射全废，且不会报错。"
         )
-    _pfx = _tok_probe.encode("### Response:\n", add_special_tokens=False)
+    # 响应前缀由模板真源给出（不再手抄 '### Response:\n'）—— 它必须与 data.py 渲染的
+    # prompt 末尾、以及 LogitProcessor/ReReTrainer 硬编码的 prefix_index 三者一致。
+    _prefix = pt.response_prefix()
+    _pfx = _tok_probe.encode(_prefix, add_special_tokens=False)
     if len(_pfx) != 3:
         raise ValueError(
-            f"'{model_path}' 的 tokenizer 把 '### Response:\\n' 切成 {len(_pfx)} 个 token "
+            f"响应前缀 {_prefix!r} 在 '{model_path}' 的 tokenizer 下切成 {len(_pfx)} 个 token"
             f"（{_pfx}），而 LogitProcessor/ReReTrainer 硬编码 prefix_index=3。\n"
-            f"  换基座 / 换 tokenizer 时必须重测这条，并同步改 "
-            f"minionerec_trainer.py 与 LogitProcessor.py 的 prefix_index。"
+            f"  模板真源 = {pt.source(anchor=model_path)}\n"
+            f"  换基座 / 换 tokenizer / 换格式时必须重测这条，并同步 prefix_index。"
         )
-    print(f"[guard] SID tokenizer OK: '<a_0>'=1 token, '### Response:\\n'={len(_pfx)} tokens "
+    print(f"[guard] SID tokenizer OK: '<a_0>'=1 token, 响应前缀 {_prefix!r}={len(_pfx)} tokens "
           f"(prefix_index=3 成立)  vocab={len(_tok_probe)}")
     print(f"[guard] precision={precision} -> dtype={_dt}  "
           f"(bf16 需 Ampere+；V100/Volta 请用 fp16)")

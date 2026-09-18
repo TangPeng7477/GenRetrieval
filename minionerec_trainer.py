@@ -61,6 +61,7 @@ from transformers import (
     )
 
 from LogitProcessor import ConstrainedLogitsProcessor
+import prompt_templates as pt   # 提示词/响应前缀的唯一真源
 from transformers.generation import LogitsProcessor
 import math
 
@@ -533,8 +534,9 @@ class ReReTrainer(Trainer):
             item_titles = [line.split('\t')[1].strip() + "\n" for line in info if len(line.split('\t')) >= 2]
             
             # Format for tokenization
-            info_semantic = [f'''### Response:\n{_}''' for _ in semantic_ids]
-            info_titles = [f'''### Response:\n{_}''' for _ in item_titles]
+            # 🔴 与 evaluate.py / data.py 同一真源（原来这里手抄 '### Response:\n'）
+            info_semantic = [pt.response_prefix(anchor=self.info_file) + _ for _ in semantic_ids]
+            info_titles = [pt.response_prefix(anchor=self.info_file) + _ for _ in item_titles]
 
             info = info_semantic
 

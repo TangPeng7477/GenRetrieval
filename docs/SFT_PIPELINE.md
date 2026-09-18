@@ -82,9 +82,15 @@
 
 ---
 
-## 2. 四个任务的定义（模板落盘在 `info/prompt_templates.json`）
+## 2. 六个任务的定义（模板单一真源 `config/prompt_templates.json`）
 
-统一外层是 Alpaca 头（与 MiniOneRec 一致）：
+外层骨架有 **三种**，全在 `config/prompt_templates.json` 里定义（模板细节见 §3.1）：
+
+| 格式 | 形态 | 用途 |
+|---|---|---|
+| **`chatml`（默认，2026-09-18 起）** | `<\|im_start\|>system … <\|im_end\|>\n<\|im_start\|>user … <\|im_end\|>\n<\|im_start\|>assistant\n` | Qwen3 原生，与预训练一致 |
+| `alpaca` | 下框（MiniOneRec 原样） | **V0 用的是它**；保留作格式消融对照 |
+| `verbatim` | 同 alpaca 但带引号（MiniOneRec 逐字复刻） | 只用于交叉校验，不进训练 |
 
 ```
 Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
@@ -99,13 +105,19 @@ Below is an instruction that describes a task, paired with an input that provide
 {output}
 ```
 
-| 任务 | instruction | input（示例） | output | 落盘 |
+⚠️ 默认格式已是 `chatml` ⟹ **Run-0 相对 V0 同时改了两个变量**（基座 `Qwen2.5-0.5B`→`Qwen3-0.6B`
+**和** 骨架 `alpaca`→`chatml`）。这是"适配 Qwen3"的主动决定，但要写进归因（§6.4(5)）。
+
+| 任务 | instruction | input（示例） | output | 数据来源 |
 |---|---|---|---|---|
 | **T1 `seq2sid`** | `Can you predict the next possible item that the user may expect?` | `The user has interacted with items <a_147><b_81><c_146>, <a_148><b_184><c_140> in chronological order. Can you predict the next possible item that the user may expect?` | `<a_5><b_23><c_66>` | `{train,valid,test}/*.csv` |
-| **T2a `sid2title`** | `Answer the question about item identification.` | `What is the title of item <a_5><b_23><c_66>?` | 商品标题 | `tasks/itemfeat.jsonl` |
+| **T2a `sid2title`** | `Answer the question about item identification.` | `What is the title of item <a_5><b_23><c_66>?` | 商品标题 | `index/*.item.json` |
 | **T2b `title2sid`** | 同上 | `Which item has the title: 3Doodler "What Will You Create? Project Book?` | `<a_5><b_23><c_66>` | 同上 |
-| **T3 `seq2title`** | `Can you recommend the next item for the user based on their interaction history?` | `The user has sequentially interacted with items <a_147>…, <a_148>…. Can you recommend the next item for him? Tell me the title of the item` | 商品标题 | `tasks/seq2title_*.jsonl` |
-| **T4 `text2sid`** | `Answer the question about item identification.` | `An item can be described as follows: 3Doodler … \| Brand: WobbleWorks \| Categories: … \| Features: …. Which item is it describing?` | `<a_5><b_23><c_66>` | `tasks/text2sid.jsonl` |
+| **T3 `seq2title`** | `Can you recommend the next item for the user based on their interaction history?` | `The user has sequentially interacted with items <a_147>…, <a_148>…. Can you recommend the next item for him? Tell me the title of the item` | 商品标题 | `train/*.csv` |
+| **T4 `text2sid`** | `Answer the question about item identification.` | `An item can be described as follows: 3Doodler … \| Brand: WobbleWorks \| Categories: … \| Features: …. Which item is it describing?` | `<a_5><b_23><c_66>` | ⏸ 训练端**无对应 Dataset 类**，未接线 |
+| **T5 `seqtitle2sid`**（RL 侧） | `Answer the question about item identification.` | `Given the title sequence of user historical interactive items: <title>, <title> … Which item will be next?` | `<a_5><b_23><c_66>` | `RLSeqTitle2SidDataset`（`data.py`） |
+
+（T4/T5 也写在真源里，但**不在 Run-0 的 `--tasks` 默认值**内。）
 
 **历史段的分隔**：物品内三层 token **直接拼接**（`<a_5><b_23><c_66>`），物品之间用 `", "` 分隔
 ——与 MiniOneRec `data.py::get_history` 一致，这样"一个物品 = 连续 3 个 token"，Trie 约束解码的层级才对得上。
@@ -137,7 +149,7 @@ data/Amazon23/<域>/sft/
 ├── info/sid2items.json         sid → {items[], representative, size}（碰撞桶）
 ├── info/sid_vocab.json         有序 768 token（tokenizer.add_tokens 用）
 ├── info/codebook.npy           (3,256,32)，RQ-VAE 码本，供 M4 语义初始化
-├── info/prompt_templates.json  四任务模板（训练端直接读，防止两端漂移）
+├── info/prompt_templates.json  模板**快照**（真源在 config/，由 prepare 拷入；读取入口 prompt_templates.py）
 └── stats.json                  全部计数
 ```
 
@@ -149,44 +161,41 @@ data/Amazon23/<域>/sft/
 ```bash
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain IandS
 ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain VG
-./.venv/Scripts/python.exe scripts/data/verify_sft_data.py  --domain all   # 体检，见 §4
+# （原 verify_sft_data.py 体检脚本已于 2026-09-18 删除，见 §7「已移除的开发期脚本」）
 ```
 
-### 3.1 明文 prompt 渲染产物（`scripts/data/build_sft_prompts.py`）
+### 3.1 提示词模板：单一真源（2026-09-18 收敛）
 
-§3 的产物是"结构化中间态"（CSV / jsonl），训练端还要自己拼提示词。
-`build_sft_prompts.py` 把它们**渲染成明文 prompt**，双格式各一套，供训练端直接读：
+**此前同一套模板有 3 份实现**（① `data.py` 的 f-string ② `prepare_sft_data.py` 的
+`PROMPT_TEMPLATES` ③ `build_sft_prompts.py` 自带的两套），改一处忘一处就是静默漂移。
+现已收敛为：
 
-```
-data/Amazon23/<域>/sft/prompts/
-├── alpaca/  T1_seq2sid.{train,valid,test}.jsonl · T2_itemfeat.jsonl
-│            T3_seq2title.{train,valid,test}.jsonl · T4_text2sid.jsonl · stats.json
-├── chatml/  同上
-└── stats.json
-data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
-```
+| 角色 | 文件 | 说明 |
+|---|---|---|
+| **真源（入 git）** | `config/prompt_templates.json` | 3 种格式骨架 + 6 个任务的 instruction/input + `response_prefix` + `completion` 约定 |
+| **唯一读取入口** | `prompt_templates.py` | 纯 stdlib 渲染器；`data.py` / `evaluate.py` / `minionerec_trainer.py` 都经它取模板 |
+| 建数据时的**快照** | `data/Amazon23/<域>/sft/info/prompt_templates.json` | 由 `prepare_sft_data.py` 从 config 拷入；锚定 `data_path` 时**优先用快照** ⟹ 旧数据永远不会被后来的模板改动污染 |
 
-每行 7 字段：`{task, split, prompt, completion, n_prompt_tok, n_compl_tok, meta}`
-（`meta` 带 `user_id` / `item_id` / `n_hist`，方便后面做冷/热分桶）
+三个要知道的点：
 
-| 口径 | 决定 |
-|---|---|
-| **主榜 Run-0 用 `chatml`** | Qwen3 原生格式，与预训练一致；`<\|im_start\|>assistant` 配 `<\|im_end\|>` 自洽 |
-| `alpaca` 也产 | 作为"格式有没有影响"的单变量消融（**不是**为比 V0 —— 见 §5.3） |
-| `completion` **不含 EOS** | 由训练端 `encode(eos=True)` 追加；`n_compl_tok` 也不计 EOS |
-| `completion` **末尾无 `\n`** | MiniOneRec 原文有，但在 Trie 下必被 -inf 屏蔽，永远生成不出来 → 死权重 |
-| 不落 token ids | 双域双格式约 2GB，只存长度；ids 由训练端现算 |
+- 🔴 **响应前缀必须从 `pt.response_prefix()` 取，不准手抄字符串**。它同时是约束解码的 key
+  （`evaluate.py` 的 Trie、`minionerec_trainer.py` 的查表、`scripts/sft/probe_constrained_decoding.py`），
+  手抄一处就是"约束静默失效"。
+- 🔴 **`completion` 尾哨兵 = `\n` + EOS** ⟹ T1 目标恒为 **5 token** `[a,b,c,\n,<|im_end|>]`。
+  Trie 的 step3 是"只允许 `\n`"、step4"只允许 EOS"，所以这两层是**设计**。
+  （旧文档写"completion 末尾不加 `\n`"——**那句是错的**，与实际训练 target 不符，已作废。）
+- ⚠️ **换基座后必须重测响应前缀的 token 数**：`prefix_index=3` 依赖它恰好切成 3 个 token。
+  chatml 的 `<|im_start|>assistant\n` = `[151644, 77091, 198]` ✓（alpaca 的 `### Response:\n`
+  也是 3 ✓）。重测办法：`probe_constrained_decoding.py` 的 C 段。
 
-**逐 token 校验**（`--verify`）：用 MiniOneRec 自己的 `SidSFTDataset` / `SidItemFeatDataset` /
-`FusionSeqRecDataset` 生成 ground-truth `input_ids`，与「verbatim 版」（带引号 + 带 `\n`、
-即 MiniOneRec 逐字复刻）逐 id 比对，**必须 0 差异**；定版与 verbatim 的差异只允许发生在
-「引号」和「尾部 `\n`」两处。报告落 `data/Amazon23/sft_prompts_verify.json`。
+**格式消融不再需要预渲染数据集**：`PROMPT_FORMAT=alpaca bash sft_run0.sh` 即可切换
+（训练端与评估端都走同一模块，自动一致；默认 `chatml`）。
 
-⚠️ 校验里的坑：三个 Dataset 的 `sample>0` 都是**随机采样**（`data.py:94` 的 `df.sample()`、
-`data.py:733` 的 `random.sample`），所以必须用 `ds.data`（采样后）逐行构造对比，
-拿自己 jsonl 的前 N 条去对会全错。
+> 🗑️ 被删掉的是**预渲染明文**：`build_sft_prompts.py` 及其产出 `prompts/`（2.6 GB）
+> 与 `tasks/`（0.36 GB）。零消费方，而它能提供的唯一价值（两套明文供消融）已被
+> `PROMPT_FORMAT` 这个运行时开关取代。清单见 §7「已移除的开发期脚本」。
 
-**全量长度实测**（`prompts/<fmt>/stats.json`，双域 × 双格式，2026-09-14 全量跑出）：
+**全量长度实测**（格式无关，2026-09-14 全量跑出，仍然有效）：
 
 | 任务 | 样本数 I&S / VG | prompt 均值 | total_max（含 completion+EOS） | >320 |
 |---|---:|---:|---:|---:|
@@ -196,15 +205,8 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 | T3 `seq2title` | 208,999 / 435,534 | 111.8 / 115.9 | **277 / 251** | 0 / 0 |
 | T4 `text2sid` | 25,847 / 25,611 | 192.0 / 165.7 | **391 / 362** | **18 / 3** |
 
-（alpaca 与 chatml 相差 1 token，来自 ChatML 的角色标记 ⇒ 长度结论不受格式影响。）
-
 → **`cutoff_len`：不带 T4 用 320；带 T4 用 400**。T4 只占 4.3% 样本，但把 max 从 277 顶到 392。
 ⚠️ MiniOneRec 是 `tokens[-max_len:]` 左侧截断，超长会砍掉 instruction 头部。
-
-```bash
-./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all             # 全量渲染（约 18 分钟）
-./.venv/Scripts/python.exe scripts/data/build_sft_prompts.py --domain all --verify    # 逐 token 校验
-```
 
 ---
 
@@ -243,15 +245,15 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 > `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:357` 的 `FusionSeqRecDataset` 同）。
 > 明文 prompt 渲染产物是给后续「格式消融 / 训练端直读明文」预留的，暂未接线。
 >
-> 📦 **体积与上云取舍**（哪几层必须传、哪几层可省 ≈ 1.04 GB/域）→ **README §4.1**；
-> 本文件不重复那些数字。
+> 📦 **上云传什么**（训练端只读 `train/valid/test/*.csv` + `index/*.json` + `info/`）
+> → **README §4.1**；本文件不重复那些数字。
 
 ### 3.3 分任务训练开关 `--tasks`（2026-09-16 落地）
 
 训练端原本**无条件**把 3 路 Dataset 拼成一份（MiniOneRec 原样）。现改为 `--tasks` 可选，
 **默认 `T1,T2a,T2b,T3` 全开，行为与 MiniOneRec 的 `ConcatDataset` 完全一致** —— Run-0 锚点不变。
 
-`[实测]` 任务 ↔ 数据类 ↔ 规模（IandS，探针 `scripts/sft/probe_task_switch.py`）：
+`[实测]` 任务 ↔ 数据类 ↔ 规模（IandS；探针 `probe_task_switch.py` **已于 2026-09-18 移除**，数字为当时实测）：
 
 | 键 | 数据类 | 任务 | 输入 → 目标 | 条数 | 占比 |
 |---|---|---|---|---:|---:|
@@ -595,7 +597,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
    —— 那会得到 `["('T1'", " 'T2a')"]` 这种脏元素。已抽 `sft.py parse_csv_list()`
    统一兼容 str / tuple / list。⚠️ **默认的 `TASKS=T1,T2a,T2b,T3` 原本就是这么崩的**：
    训练直到 2026-09-16 才第一次真正启动，之前所有自检都没走到 `train()`。
-   回归用例已加进 `scripts/sft/probe_task_switch.py`。
+   （回归用例原在 `scripts/sft/probe_task_switch.py`，该探针已于 2026-09-18 移除。）
 
 **本地冒烟的两个额外坑（本机沙箱特有，云端没有）**：
 
@@ -717,7 +719,7 @@ micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval
 
 ---
 
-## 4. 体检实测数字（2026-09-14，`data/Amazon23/sft_verify.json`）
+## 4. 体检实测数字（2026-09-14；原 `verify_sft_data.py` 与产物 `sft_verify.json` 已于 2026-09-18 移除）
 
 | 检查项 | IandS | VG | 判定 |
 |---|---:|---:|---|
@@ -752,8 +754,8 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 | `cutoff_len` | 512 | **400**（不带 T4 可 320） | `[实测]` 全量：T1 ≤180、T3 ≤277、**T4 ≤392**；512 有 40% 是纯 padding |
 | `category` 参数 | `Industrial_and_Scientific` 等 5 个硬编码 | **IandS 单域实验无需改动**；上 VG 时要在 `sft.py:198` **和** `evaluate.py:56` **两处**都加 `"Video_Games": "video games"` | `[代码]` 两个脚本的 `category_dict` 都只有 5 个键，VG 会 `KeyError` |
 
-> ⚠️ **修正一处先前的数字**：§4 ③ 曾报"T4 最长 309"，那是 `verify_sft_data.py` **抽样** ≤n_probe 条的结果；
-> 全量渲染后真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
+> ⚠️ **修正一处先前的数字**：上表 ③ 曾报"T4 最长 309"，那是体检脚本**抽样** ≤n_probe 条的结果；
+> 全量真实 max 是 **391（IandS）/ 362（VG）**，超 320 的分别有 18 / 3 条。
 > 抽样在长度分布的长尾上不可靠 —— 定 `cutoff_len` 这种"取 max"的场合必须用全量。
 
 ### 4.2 超长 T4 **不用重生成数据集**，改 `cutoff_len` 即可
@@ -763,7 +765,7 @@ label 段解码 = ['<a_96>', '<b_200>', '<c_175>', '\n', '<|im_end|>']
 | 层 | 是否截断 | 证据 |
 |---|---|---|
 | `prepare_sft_data.py`（构造四任务） | ❌ 只按**字符**截（`--max_text_chars 512`），不管 token | 无 tokenizer |
-| `build_sft_prompts.py`（渲染明文） | ❌ **只统计 `over_320` 计数，从不截断** | 脚本内无 `[:max_len]` |
+| ~~`build_sft_prompts.py`（渲染明文）~~ | 🗑️ **脚本已删**（2026-09-18） | 它另有一条「从不截断」的事实，随脚本一并作废 |
 | **`data.py:190-197`（训练端）** | ✅ `tokens[-max_len:]` —— **从左侧砍** | 唯一真正的截断点 |
 
 所以数据集里存的是**明文**，长度是训练时才决定的 —— **改参数就够了，不用重生成**。
@@ -1010,7 +1012,7 @@ len(tokenizer) = 151669 -> 152437          id range = [151669, 152436]
 T1 目标结构 512/512 通过 = [3 个 SID] + [\n, EOS]
 ```
 
-**`[实测]` 任务开关路由自检**（`scripts/sft/probe_task_switch.py --domain IandS`）：
+**`[实测]` 任务开关路由自检**（原 `scripts/sft/probe_task_switch.py --domain IandS`，探针已移除）：
 
 ```
 A 解析 : PASS   8 个用例（默认 / 单任务 / 双任务 / 非法键 / 空值 / 只给一半 -> WARN）
@@ -1148,7 +1150,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 **(3) `[实测]` 新增 token 的 embedding 初始化走 `mean_resizing`，不是 `initializer_range`**
 
-（2026-09-16，探针 `scripts/sft/probe_vocab_registration.py`，Qwen3-0.6B fp32 CPU）
+（2026-09-16，原探针 `scripts/sft/probe_vocab_registration.py`（**已移除**），Qwen3-0.6B fp32 CPU）
 
 原推断（"新增 768 行按 `initializer_range=0.02` 初始化，若与预训练行 std 差一个量级则 S0 必须调 LR"）
 **已被实测推翻一半**：
@@ -1178,7 +1180,7 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 MiniOneRec 的 `TokenExtender`（`sft.py:30-55`）是**从 `index.json` 现收现加**，且 `sorted()`（`:53`）排序。
 照搬到本项目会同时踩两个坑：
 
-| 坑 | 实测（`scripts/sft/probe_vocab_registration.py`） |
+| 坑 | 实测（原探针 `probe_vocab_registration.py`，**已移除**） |
 |---|---|
 | **顺序** | `sorted()` 是字典序（`<a_0>, <a_100>, … <a_109>, <a_10>`），与本项目 `sid_vocab.json` 的**码序**下 **765 / 768 个 token 的 id 不同** |
 | **集合** | index 只含"被用到过"的码：**VG 只有 759 个**（缺 9 个 a 层死码 = **9/256 = 3.52%**，与 `SID_PIPELINE` 记的 VG L0 死码率**完全吻合**）；IandS 恰好 768 |
@@ -1192,21 +1194,22 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 `set(index 的 token) ⊆ set(vocab)`；**只有找不到 vocab 时才回退** MiniOneRec 的 `sorted()` 路径
 （并打 WARN）。已落地 `sft.py:58 SidVocabLoader` + `:241-306` 注册块（推导 / 断言 / 注册 / 落盘），端到端自检见 §4.6。
 
-**(5) 🔴 `data.py` 的提示词仍与 §2.1 定版**漂移**（2026-09-16 发现，**刻意未修**）**
+**(5) ✅ `data.py` 的提示词漂移已修（2026-09-18）—— 但它同时改掉了 Run-0 的一个变量**
 
-| 位置 | 现状 | §2.1 定版 |
+2026-09-16 记的漂移有两条：`sid2title` 带双引号、T1 的 target 带尾部 `\n`。现状：
+
+| 位置 | 2026-09-16（漂移） | 现在 |
 |---|---|---|
-| `data.py:743` `SidItemFeatDataset.generate_prompt`（sid2title，定义在 `:738`） | `What is the title of item "{sid}"?` —— **带双引号** | 全部裸写 |
-| `data.py:740`（title2sid） | `Which item has the title: {title}?` —— 无引号 | 全部裸写 ✅ |
-| `data.py:417` T1 的 `output` | `target_item + "\n"` —— **带尾部 `\n`** | completion 末尾不加 `\n` |
+| `sid2title` 的 input | `What is the title of item "{sid}"?`（带引号） | **裸写**（引号版降级为 `verbatim` 格式，只用于校验） |
+| T1 target | `target_item + "\n"`（当时判定为"多余"） | **保留 `\n`** —— 查明 Trie step3 就是"只允许 `\n`"，它是**设计**，不是残留 |
+| 模板来源 | `data.py` 内联 f-string | `config/prompt_templates.json` + `prompt_templates.py`（单一真源） |
 
-**为什么留着**：Run-0 要**只改「基座」一个变量**（`Qwen2.5-0.5B` → `Qwen3-0.6B`）。
-提示词口径（裸写、去 `\n`）的改动留到 Run-1 之后单独消融，否则出了数字归因不干净。
+🔴 **代价必须记账**：`data.py` 的骨架同时从 `alpaca` 换成了 `chatml` ⟹ **Run-0 相对 V0 变了两个
+变量（基座 + 骨架）**。这是"适配 Qwen3"的主动决定，但归因时不能假装只有基座变了。
+若要把格式也变成单变量，退路是 `PROMPT_FORMAT=alpaca` 再跑一遍（见 §3.1）。
 
-🔴 **连带发现**：`info/prompt_templates.json` 自称"训练端直接读、防止两端漂移"，
-但 **`grep data.py` 找不到任何读它的代码** —— 这个防漂移机制**实际上没接线**。
-`prompts/{alpaca,chatml}/*.jsonl` 同理（§3.2 已标注"零消费方"）。
-→ 真要防漂移，得把 `data.py` 的 `generate_prompt` 改成读 `prompt_templates.json`；**未做**。
+顺带解决：`info/prompt_templates.json` 自称"训练端直接读、防漂移"而**实际没接线**的问题——
+现在 `data.py` 真的读了（经 `prompt_templates.py`），该机制首次生效。
 
 ### 6.5 执行队列（每项只改一个变量，否则数字归因不了）
 
@@ -1237,6 +1240,29 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 | raw 桶 vs 唯一化的端到端消融 | ⏸ | `sid_sk.npy` 已存档，切口径重跑即可 |
 | Qwen3-0.6B 权重 | ✅ | `[实测]` 2026-09-16 已下并校验通过：1,503,300,328 B、sha256 `f47f7117…6874b` **逐位一致**（§4.5）。⚠️ **teacher `Qwen3-1.7B` 仍未下载**（4.06 GB） |
 | SID 词表注册 | ✅ | `[实测]` 已定版 + 落地（§6.4(4) / §4.6）；自检脚本 `scripts/sft/verify_run0_registration.py --domain IandS` 全绿 |
-| 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **469,692** 条；探针 `scripts/sft/probe_task_switch.py` 全绿 |
-| 约束解码链路核验 | ✅ | `[实测]` §3.4：Trie 5 步 `[256,98,1,1,1]` 与训练 target 逐位对应；`prefix_index=3` 前提成立；**顺带修掉上游遗留的 train/eval prompt 不一致**。回归检查已接入 `evaluate_run0.sh` |
-| T4 `text2sid` 训练端接线 | ⏸ | 数据已产（`tasks/text2sid.jsonl` 25,847 条），`data.py` **无对应 Dataset 类**，要用需新写 |
+| 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **469,692** 条（原 `probe_task_switch.py` 探针已移除） |
+| 约束解码链路核验 | ✅ | `[实测]` §3.4：Trie 5 步 `[256,98,1,1,1]` 与训练 target 逐位对应；`prefix_index=3` 前提成立；**顺带修掉上游遗留的 train/eval prompt 不一致**。回归检查已接入 `evaluate_run0.sh`（`probe_constrained_decoding.py` 保留） |
+| T4 `text2sid` 训练端接线 | ⏸ | `data.py` **无对应 Dataset 类**，要用需新写（原 `tasks/text2sid.jsonl` 中间产物已随渲染脚本一并删除） |
+| **提示词模板单一真源** | ✅ | `[实测]` 2026-09-18 收敛（§3.1）：3 份实现 → `config/prompt_templates.json` + `prompt_templates.py`；7 个在用 Dataset 类全部改走真源，`data.py` 复验 BAD=0 |
+
+### 7.1 已移除的开发期脚本（2026-09-18）
+
+这些**不在训练/eval 链路上**，为减负删除；内容仍在 git 历史里，随时可取回：
+
+```bash
+git log --diff-filter=D --name-only --oneline -- 'scripts/**'   # 看被删清单
+git show <commit>^:scripts/multimodal/probe_latent_rank.py      # 取回某个文件
+```
+
+| 已删 | 原用途 | 为什么可以删 |
+|---|---|---|
+| `scripts/data/build_sft_prompts.py` | 预渲染双格式明文 prompt | 产物零消费方；其唯一价值（格式消融）已由 `PROMPT_FORMAT` 开关取代 |
+| `scripts/data/verify_sft_data.py` | 数据集体检 | 一次性；结论已固化在 §4 |
+| `scripts/sft/probe_task_switch.py` | `--tasks` 路由自检 | 一次性；结论已固化在 §3.3 |
+| `scripts/sft/probe_vocab_registration.py` | 词表注册实测 | 一次性；结论已固化在 §6.4(3)(4) |
+| `scripts/sft/probe_rl_constraint_map.py` | RL 侧约束查表复刻 | 结论已固化在 `RL_PIPELINE §3` |
+| `scripts/sft/probe_rl_memory.py` | 本地显存逐块账本 | 本地 4GB 专用；上云不需要（结论在 §3.8/§3.10） |
+| `scripts/multimodal/probe_{alignment_methods,dataset_stats,fusion_rank,gate_twins,latent_rank,twin_sinkhorn}.py` | SID 阶段几何/数据诊断 | 结论已固化在 `SID_PIPELINE` / `DATASET` / `KNOWLEDGE_BASE` |
+
+**保留的三个**（都在链路上）：`probe_constrained_decoding.py`（`evaluate_run0.sh:112-118` 的硬闸门）、
+`verify_run0_registration.py`（Run-0 词表注册核验）、`baseline/scripts/probe_sequence_reconstruction.py`（baseline 复现树）。
