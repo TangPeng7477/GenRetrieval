@@ -1,6 +1,6 @@
 # SFT 评估结果表
 
-> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **3** 条记录，生成于 2026-09-19T02:38:31。**请勿手改。**
+> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **1** 条记录，生成于 2026-09-19T02:43:27。**请勿手改。**
 >
 > 数据源：`results/sft/<EXP_ID>/eval_*.{meta,metrics}.json`（该目录被 `.gitignore` 忽略，明细不入仓；**只有本表入仓**，供跨会话 / 跨环境对照）。
 
@@ -19,9 +19,7 @@
 
 | EXP_ID | 模型版本 | 格式 | 推理时间 | 样本 | beam | HR@1 | HR@5 | HR@10 | HR@20 | NDCG@10 | 耗时 | commit | 备注 |
 |---|---|:--:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|
-| **IandS-untrained** | `models/Qwen3-0.6B` | — | 2026-09-16 20:41 | 300 | 20 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | — | `3ac43d5` | 现场注册(dry-run) / 非训练产物 / 抽样 / 采样:隐式(旧记录) |
-| **IandS-untrained-chatml** | `models/Qwen3-0.6B` | chatml | 2026-09-18 21:56 | 2000 | 20 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 19m47s (594ms) | `9ad877d` | 现场注册(dry-run) / 非训练产物 / 抽样 / 采样:隐式(旧记录) |
-| **IandS-untrained-tplcheck** | `models/Qwen3-0.6B` | chatml | 2026-09-18 21:33 | 32 | 20 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 1m13s (2281ms) | `cde41d5` | 现场注册(dry-run) / 非训练产物 / 抽样 / 采样:隐式(旧记录) |
+| **IandS-hs1-T2aT2b** | `outputs/IandS-hs1-T2aT2b/final_checkpoint` | chatml | 2026-09-19 01:31 | 500 | 50 | 0.0020 | 0.0020 | 0.0040 | 0.0060 | 0.0026 | 1m51s (222ms) | `f5b9651` | 非训练产物 / 抽样 / 采样:隐式(旧记录) |
 
 ---
 
