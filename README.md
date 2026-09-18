@@ -388,7 +388,7 @@ scripts/multimodal/{compare_sid_modes, compare_rqkmeans, make_sid_summary}.py
 
 §3.4 的 V0 数字来自原 MiniOneRec 项目（RTX 3090 实测），在本仓仅作待超越的锚点。
 
-> ⚠️ 🔴 根目录 `sft.sh` / `sft_3090.sh` / `evaluate.sh` / `evaluate_3090.sh` **仍是 MiniOneRec 原版**，
+> ⚠️ 🔴 根目录 `sft.sh` / `evaluate.sh` **仍是 MiniOneRec 原版**（原 `*_3090.sh` 已于 2026-09-19 删除），
 > 内部数据路径写死为 `./data/Amazon/train/${CATEGORY}*11.csv` —— **本仓不存在该路径**，
 > 直接跑会 `ls` 空、`${test_file}` 为空字符串。本项目入口是 **`sft_run0.sh`**（§8.7）与 **`rl_run0.sh`**（§8.8）。
 
@@ -690,7 +690,7 @@ EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
 🔴 `evaluate.py --base_model` 必须指向**训练输出目录**（自带扩展后的 tokenizer = 152437）；
 指回 `models/Qwen3-0.6B` 会让 SID 被切成碎片、Trie 全挂。
 
-> ⚠️ 根目录 `sft.sh` / `sft_3090.sh` / `evaluate.sh` / `evaluate_3090.sh` 是 MiniOneRec 原版，
+> ⚠️ 根目录 `sft.sh` / `evaluate.sh` 是 MiniOneRec 原版（原 `*_3090.sh` 已删），
 > 数据路径写死 `./data/Amazon/...`（**本仓不存在**），**不要直接用**。
 >
 > ⏸ M4 的语义初始化已备好码本 `info/codebook.npy` `(3,256,32)`，训练端尚未接。
@@ -734,7 +734,7 @@ MODEL_PATH=outputs/IandS-rl0/final_checkpoint bash evaluate_run0.sh
 （item embedding 的 pickle）、`sasrec` 缺 `--cf_path`（根 `sasrec.py` 的权重）——
 `rl.py` 已加护栏，缺了会明确报错而不是抛 `KeyError`。
 
-⚠️ 根目录 `rl.sh` / `rl_3090.sh` 同样是 MiniOneRec 原版，路径写死 `./data/Amazon/...`，**不要直接用**。
+⚠️ 根目录 `rl.sh` 同样是 MiniOneRec 原版，路径写死 `./data/Amazon/...`，**不要直接用**（原 `rl_3090.sh` 已删）。
 
 ---
 

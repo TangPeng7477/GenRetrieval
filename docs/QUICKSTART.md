@@ -188,35 +188,49 @@ bash scripts/multimodal/run_vg_sid.sh
 ## 3. 下载基础模型
 
 ```bash
-bash scripts/download_models.sh                # 全部
-bash scripts/download_models.sh --base-only    # 仅 Qwen3-0.6B（学生）
-bash scripts/download_models.sh --mirror       # 强制 hf-mirror.com
+bash scripts/download_base_models.sh              # 幂等，已下过的会 skip；走 ModelScope + sha256 逐位校验
+# bash scripts/download_base_models.sh --target all   # 连 teacher Qwen3-1.7B（4.06 GB）
 ```
 
-| 角色 | 模型 |
-|------|------|
-| 学生（SFT + RL） | Qwen3-0.6B |
-| 教师（OPD 蒸馏） | Qwen3-1.7B |
+| 角色 | 模型 | 体积 |
+|------|------|------|
+| 学生（SFT + RL） | Qwen3-0.6B | 1.5 GB |
+| 教师（OPD 蒸馏） | Qwen3-1.7B | 4.06 GB（按需） |
+
+> ⚠️ `scripts/download_models.sh` 是 **MiniOneRec 原版**（下 `Qwen2.5-0.5B` + 官方 1.5B ckpt），
+> 与本项目用的 Qwen3 系列**不是同一个模型**，**不要用**。
 
 ---
 
 ## 4. 训练与评估（云端 RTX 3090）
 
+> 🔴 入口是**根目录** `sft_run0.sh` / `evaluate_run0.sh` / `rl_run0.sh`。
+> ⚠️ `sft.sh` / `rl.sh` / `evaluate.sh` 是 **MiniOneRec 原版**，数据路径写死 `./data/Amazon/...`
+> （本仓不存在），**不要用**。原 `*_3090.sh` 三个变体已于 2026-09-19 删除（内容见 `V0_MINIONEREC_TECH_DOC.md`）。
+
 ```bash
-# SFT（语义 token 初始化 + 课程学习 + QLoRA）
-bash sft_3090.sh
+# SFT 训练（EXP_ID = <域>-<RUN_TAG>[-<任务集>]）
+TASKS=T1,T2a,T2b,T3 RUN_TAG=run0 bash sft_run0.sh
 
-# SFT 评估
-MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
+# SFT 评估（MODEL_PATH 必须指训练输出目录 —— 那里才有扩展 tokenizer）
+MODEL_PATH=outputs/IandS-run0/final_checkpoint bash evaluate_run0.sh
 
-# RL（分层奖励 / OPD 双轨）
-MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash rl_3090.sh
+# RL（--model_path 必须是 SFT 产物目录，指回基座会静默崩）
+MODEL_PATH=outputs/IandS-run0/final_checkpoint bash rl_run0.sh
 
 # RL 评估
-MODEL_PATH=./outputs/rl_IandS_3090/final_checkpoint bash evaluate_3090.sh
+MODEL_PATH=outputs/rl_IandS-run0/final_checkpoint bash evaluate_run0.sh
 
-# 断点续训
-RESUME=./outputs/rl_IandS_3090/checkpoint-5280 bash rl_3090.sh
+# 断点续训（同一个 run 的中断续训；换任务集要用 BASE_MODEL，不是 RESUME）
+RESUME=outputs/rl_IandS-run0/checkpoint-5280 bash rl_run0.sh
+```
+
+**硬串行配方**（分阶段训任务，详见 `SFT_PIPELINE §6.6`）：
+
+```bash
+EVAL_BY_EPOCH=True TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
+EVAL_BY_EPOCH=True TASKS=T1,T3 RUN_TAG=hs2 \
+  BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
 ```
 
 > 本地 4GB 显存跑不动完整训练，仅用于 SID 构建与小规模冒烟测试。
@@ -228,12 +242,15 @@ RESUME=./outputs/rl_IandS_3090/checkpoint-5280 bash rl_3090.sh
 
 ```bash
 set -euo pipefail
-bash scripts/setup_env.sh
-bash scripts/download_models.sh --mirror
-bash scripts/data/download_amazon23.sh
-python scripts/data/prepare_amazon23.py --category Industrial_and_Scientific --short IandS
-bash sft_3090.sh
-MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
+bash scripts/setup_env.sh                       # 平台已装 torch 时加 SKIP_TORCH=1
+source .venv/bin/activate                       # ⚠️ 云端无 ./.venv/Scripts/python.exe
+python scripts/check_deps.py --strict           # 依赖闸门（AST 扫真实 import）
+bash scripts/download_base_models.sh            # 基座权重（ModelScope + sha256 校验）
+# 数据需从本地 rsync 上来（不在 git 里）：
+#   rsync -avP --relative data/Amazon23/IandS/sft user@<云主机>:~/GenRetrieval/
+python scripts/sft/verify_run0_registration.py --domain IandS
+TASKS=T1,T2a,T2b,T3 RUN_TAG=run0 bash sft_run0.sh
+MODEL_PATH=outputs/IandS-run0/final_checkpoint bash evaluate_run0.sh
 ```
 
 ---
@@ -243,18 +260,21 @@ MODEL_PATH=./outputs/sft_IandS_3090/final_checkpoint bash evaluate_3090.sh
 ```
 GenRetrieval/
 ├── scripts/
-│   ├── setup_env.sh            # 环境安装（Linux/云）
-│   ├── setup_env.ps1           # 环境安装（Windows）
-│   ├── download_models.sh      # 模型下载
-│   ├── data/                   # 数据集下载与预处理
+│   ├── setup_env.sh / .ps1     # 环境安装（Linux/云 | Windows）
+│   ├── download_base_models.sh # 基座权重下载（ModelScope + sha256 逐位校验，幂等）
+│   ├── check_deps.py           # 依赖闸门（--strict = 上云前必过）
+│   ├── data/                   # 数据集下载与 SFT 数据构建（prepare_sft_data.py）
+│   ├── sft/                    # 链路闸门（verify_run0_registration / probe_constrained_decoding）
 │   └── multimodal/             # 图文编码与融合
 ├── requirements-core.txt       # 可安装的核心依赖（推荐）
 ├── requirements.txt            # 上游原始依赖（仅供追溯，勿直接装）
 ├── .wheels/                    # 本地 torch wheel（Windows 重建环境用）
+├── config/                     # 提示词模板单一真源（prompt_templates.json）
 ├── rq/                         # SID：RQ-VAE / RQ-KMeans
 ├── minionerec_trainer.py       # 自定义 GRPO trainer（依赖 trl 内部 API）
-├── sft_3090.sh / rl_3090.sh    # 训练入口
-├── evaluate_3090.sh            # 评估入口
+├── sft_run0.sh                 # SFT 训练入口
+├── rl_run0.sh                  # RL 训练入口
+├── evaluate_run0.sh            # 评估入口
 └── docs/                       # 方案 / 实验日志 / 数据说明 / 本文件
 ```
 

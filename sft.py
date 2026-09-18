@@ -225,6 +225,15 @@ def train(
     #    顺带一提：传 1.0 不等于"每 epoch 一次"，它会被当成"每 1 步"。
     eval_frac: float = 0.05,
 
+    # [本项目新增] 按 epoch 对齐 eval / save，恒为"每轮一次"。与 eval_frac 二选一：
+    #   eval_by_epoch=True  -> eval_strategy=save_strategy="epoch"（eval_frac 被忽略）
+    #   eval_by_epoch=False -> 走 steps，频率由 eval_frac 决定（旧行为，默认）
+    # 🔴 为什么需要它：eval_frac 当 eval_steps 用时是步数语义，换数据集/epoch 就要重算；
+    #    硬串行配方（SFT_PIPELINE §6.6）里各阶段步数都不同，写死魔数迟早算错。
+    # ⚠️ save_steps 共用同一策略 ⟹ 每轮末尾存一次，配 save_total_limit=1 只留最新一份，
+    #    所以 final_checkpoint 是"最后一轮"而非 best —— 硬串行接续训练正需要这个语义。
+    eval_by_epoch: bool = False,
+
     # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
     precision: str = "bf16",
 ):
@@ -247,7 +256,7 @@ def train(
     else:
         raise ValueError(f"precision 只支持 ['bf16', 'fp16', 'fp32']，收到 {precision!r}")
     os.environ['WANDB_PROJECT'] = wandb_project
-    category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books"}
+    category_dict = {"Industrial_and_Scientific": "industrial and scientific items", "Office_Products": "office products", "Toys_and_Games": "toys and games", "Sports": "sports and outdoors", "Books": "books", "Video_Games": "video games"}
     print(category)
     category = category_dict[category]
     assert (
@@ -469,6 +478,13 @@ def train(
     print(hf_train_dataset)
     print(hf_val_dataset)
     eval_step = eval_frac
+    # [本项目新增] eval/save 策略二选一：epoch 对齐（每轮一次）或按步（eval_frac）
+    if eval_by_epoch:
+        _eval_strategy, _save_strategy = "epoch", "epoch"
+        _eval_steps = _save_steps = None      # epoch 模式下这两个参数必须留空，否则 HF 报错
+    else:
+        _eval_strategy, _save_strategy = "steps", "steps"
+        _eval_steps = _save_steps = eval_step
     trainer = transformers.Trainer(
         # deepspeed=deepspeed,
         model=model,
@@ -487,10 +503,10 @@ def train(
             fp16=_fp16,
             logging_steps=1,
             optim="adamw_torch",
-            eval_strategy="steps",
-            eval_steps=eval_step, 
-            save_strategy="steps",
-            save_steps=eval_step,
+            eval_strategy=_eval_strategy,
+            eval_steps=_eval_steps,
+            save_strategy=_save_strategy,
+            save_steps=_save_steps,
             output_dir=output_dir,
             save_total_limit=1,
             load_best_model_at_end=True,

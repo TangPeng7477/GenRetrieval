@@ -732,11 +732,11 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 
 ### 3.9 Checkpoint 保存与 eval 节奏（2026-09-16 读源码 + 实测）
 
-**结论：按步数存，不按 epoch 存。** `sft.py:478-505` 里 eval 与 save 全部用 `steps` 策略。
+**结论：按步数存，不按 epoch 存。** `sft.py:482-487` 里 eval 与 save 的策略由 `EVAL_BY_EPOCH` 二选一（默认 `steps`）。
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| `eval_strategy` / `save_strategy` | `steps` | 按步，不按 epoch |
+| `eval_strategy` / `save_strategy` | `steps`（默认）/ `epoch`（`EVAL_BY_EPOCH=True`） | 见下方「两种模式」 |
 | `eval_steps` / `save_steps` | `eval_frac`（**同一个变量**） | 语义见下 |
 | `logging_steps` | 1 | 每步打 `{loss, grad_norm, learning_rate}` |
 | `save_total_limit` | 1 | 运行时会被抬到 2（见「安全网」） |
@@ -744,6 +744,25 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 | `metric_for_best_model` | **`'loss'`**（自动默认） | 未传 `compute_metrics` ⟹ 按 `eval_loss` 选优；`greater_is_better=False` |
 | `save_only_model` | False（默认） | ⟹ checkpoint 里含 **`optimizer.pt`**（1.8–3.1 GB/个的成因） |
 | 早停 | `EarlyStoppingCallback(patience=3)` | 盯同一个 `eval_loss` |
+
+**两种模式（`EVAL_BY_EPOCH`，2026-09-19 新增）**
+
+| | 默认（`steps`） | `EVAL_BY_EPOCH=True` |
+|---|---|---|
+| `eval_strategy` / `save_strategy` | `"steps"` | `"epoch"` |
+| `eval_steps` / `save_steps` | `eval_frac` | **`None`**（epoch 模式下必须留空，否则 HF 报错） |
+| 频率 | 由 `eval_frac` 决定（<1 比例 / ≥1 绝对步数） | **恒为每轮一次**，与步数/数据集无关 |
+| 适用 | 需要细粒度曲线、本地冒烟 | **硬串行配方（§6.6）**、各阶段步数不同的场景 |
+
+🔴 **为什么加 `epoch` 模式**：`eval_frac` 落在 `steps` 上时是**绝对步数**语义，换个域/epoch 就要重算
+（IandS `TASKS=T2a,T2b` 总步数 2367，想每轮一次得手算 789 —— 而 hs2/hs3 又是别的数）。
+`epoch` 模式把这个数字彻底消掉。
+🔴 **`EVAL_BY_EPOCH` 只接受 `True` / `False`**（`sft_run0.sh:70-74` 有 `case` 防护当场拦下其它值）：
+Python 里 `bool("False") == True`，传 `False`/`1`/`yes` 这类字符串会**静默走 epoch 分支**、与意图相反且不报错。
+
+⚠️ **epoch 模式下 `final_checkpoint` 是「最后一轮」而非「best」**：`save_strategy="epoch"` +
+`save_total_limit=1` ⟹ 每轮末尾存一次、只留最新一份，`load_best_model_at_end` 拿不到更早的 ckpt。
+硬串行接续训练**正需要这个语义**（阶段 2 要接阶段 1 的终态），但做「比 best」的实验时要注意。
 
 **`eval_frac` 的语义（最容易踩）**：Trainer 的规则 = **`< 1` 当比例、`>= 1` 当绝对步数**
 （`.venv/Lib/site-packages/transformers/trainer_callback.py:157-168` `TrainerState.compute_steps` → `ceil(max_steps × 比例)`）。
@@ -764,7 +783,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 🔴 **安全网**：`save_total_limit=1` + `load_best_model_at_end=True` 本来会把**最优** ckpt 一起删掉；
 `.venv/Lib/site-packages/transformers/trainer.py:4405-4413` 检测到这种情况后**自动把上限抬到 2** ⟹ 磁盘上最多留 2 个 checkpoint。
 
-🔴 **落盘有两份**（`sft.py:491-504`，顺序不能反）：
+🔴 **落盘有两份**（`sft.py:527-540`，顺序不能反）：
 1. `trainer.save_model(outputs/<EXP_ID>/)` → 根目录一份（含 tokenizer）
 2. 再存 `outputs/<EXP_ID>/final_checkpoint/` → **`evaluate.py` 指的是这里**
 
@@ -1252,7 +1271,8 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 全参数冻结 → 只解冻 `get_input_embeddings().weight` → **注册 grad hook 把前 `original_vocab_size` 行梯度清零**。
 即：实际只有 768×1024 = 786,432 个参数在动。因为 Qwen3-0.6B 是 `tie_word_embeddings=true`
 （`models/Qwen3-0.6B/config.json`），这个张量同时是 lm_head，所以"只训 embedding"在 tied 下语义正确。
-⚠️ `sft_3090.sh` 默认 `FREEZE_LLM=False` —— **这个开关一直没被用过**。
+⚠️ V0 的 `sft_3090.sh` 默认 `FREEZE_LLM=False`（脚本已随 V0 归档删除，配置见 `V0_MINIONEREC_TECH_DOC.md`）
+—— **这个开关一直没被用过**。
 
 **(2) `sid2title` 在碰撞桶上是一对多，但可以不管**：
 
@@ -1366,7 +1386,7 @@ Run-0 自身是自洽的（id 只是重新编号），但：
   ⟹ 不同 `TASKS` 的阶段**不会互相覆盖**。但三段都叫 `run0` 时汇总表里看不出先后，所以**显式给 `RUN_TAG`**。
 - 🔴 **`BASE_MODEL` 必须指上一阶段的 `final_checkpoint/`**（合并后的完整权重 + 扩展词表）。
   指回 `models/Qwen3-0.6B` ⟹ **上一阶段白训**。⚠️ 脚本只会校验该目录下有 `model.safetensors`
-  （`sft_run0.sh:110-111`），**校验不出这个语义错误**。
+  （`sft_run0.sh:120-121`），**校验不出这个语义错误**。
 - ⚠️ **`resume_from_checkpoint` 不是接续手段**：它是同一个 run 的中断续训（`sft.py:205`）；
   换任务集必须走 `BASE_MODEL`。
 - 链式接续是安全的：上一阶段产物已含扩展词表 ⟹ `add_tokens` 新增 0 个、`resize_token_embeddings` 成为空操作（`sft.py:323-324`）。
@@ -1375,15 +1395,16 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 ```bash
 # ── 阶段 1 = 对齐（≈ S0）：只训 T2，让 768 个新 token 先进语义空间
-TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
+# 🔴 EVAL_BY_EPOCH=True：每轮 eval 一次（各阶段步数不同，写死 EVAL_FRAC 魔数迟早算错）
+EVAL_BY_EPOCH=True TASKS=T2a,T2b RUN_TAG=hs1 bash sft_run0.sh
 #    -> outputs/IandS-hs1-T2aT2b/final_checkpoint
 
 # ── 阶段 2 = 主训练（≈ S1）：T1（主指标）+ T3（标题生成），从阶段 1 接着训
-TASKS=T1,T3 RUN_TAG=hs2 BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
+EVAL_BY_EPOCH=True TASKS=T1,T3 RUN_TAG=hs2 BASE_MODEL=outputs/IandS-hs1-T2aT2b/final_checkpoint bash sft_run0.sh
 #    -> outputs/IandS-hs2-T1T3/final_checkpoint
 
 # ── 阶段 3 = 退火（≈ S2）：只 T1，去掉辅助任务分布干扰，贴合评估口径
-TASKS=T1 RUN_TAG=hs3 BASE_MODEL=outputs/IandS-hs2-T1T3/final_checkpoint bash sft_run0.sh
+EVAL_BY_EPOCH=True TASKS=T1 RUN_TAG=hs3 BASE_MODEL=outputs/IandS-hs2-T1T3/final_checkpoint bash sft_run0.sh
 #    -> outputs/IandS-hs3-T1/final_checkpoint
 
 # ── 每阶段单独评估（EXP_ID 从 MODEL_PATH 自动反推）
@@ -1392,6 +1413,13 @@ MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
 
 （若坚持严格的 `T1 → T2 → T3`，把上面三行的 `TASKS` 换成 `T1` / `T2a,T2b` / `T3` 即可；
 ⚠️ **顺序本身就是一个变量** —— 两组结果不可互比。）
+
+⚠️ **为什么这条配方必须配 `EVAL_BY_EPOCH=True`**（`[实测]` 2026-09-19）：默认 `EVAL_FRAC=0.05`
+在 `TASKS=T2a,T2b` 上落成 **每 47 步一次**，而每次 eval 是全量验证集（50,984 条 = 12,746 个 eval step，
+约 6.6 min）⟹ eval 占总时长 **约 3.8 倍于训练**（训练 87 min，eval ≈330 min，合计 ~7 h）。
+改成每轮一次（共 3 次）⟹ 总计约 **90 min**。
+`MICRO_BATCH_SIZE` 也可从默认 4 抬到 16（3090 显存用不到一半）：梯度等价（accum 16→4）、
+且 `per_device_eval_batch_size` 同变量（`sft.py:497`）⟹ **eval 一并提速 4×**。
 
 **记账（写给未来的自己 / 面试）**：
 

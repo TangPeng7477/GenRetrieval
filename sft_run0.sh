@@ -11,7 +11,7 @@ set -euo pipefail
 # 因此刻意不动提示词口径（data.py 保持 verbatim 带引号版，
 # 见 SFT_PIPELINE §6.4(5)），否则出了数字归因不干净。
 #
-# 根目录的 sft.sh / sft_3090.sh 是 MiniOneRec 原版，数据路径指向
+# 根目录的 sft.sh 是 MiniOneRec 原版，数据路径指向
 # ./data/Amazon/... —— 本仓不存在，不要直接用。
 # ============================================================
 
@@ -64,6 +64,16 @@ LORA_TARGETS="${LORA_TARGETS:-q_proj,k_proj,v_proj,o_proj}"
 # 会被拦下并中断训练（实测 exit=1）。注意传 1.0 ≠ 每 epoch 一次，它等于"每 1 步"。
 EVAL_FRAC="${EVAL_FRAC:-0.05}"
 
+# [本项目新增] 按 epoch 对齐 eval/save（每轮一次），置 True 时 EVAL_FRAC 被忽略。
+# 硬串行配方（SFT_PIPELINE §6.6）推荐用这个：各阶段步数不同，写死步数迟早算错。
+EVAL_BY_EPOCH="${EVAL_BY_EPOCH:-False}"
+# 🔴 防护：fire 把 "True"/"False" 解析成 Python bool；但若传成其它字符串（如 TRUE/1/yes），
+#    Python 里非空字符串恒为真 -> 会静默走 epoch 分支，与意图相反且不报错。当场拦掉。
+case "${EVAL_BY_EPOCH}" in
+  True|False) ;;
+  *) echo "[ERROR] EVAL_BY_EPOCH 只接受 True / False，收到 '${EVAL_BY_EPOCH}'"; exit 1 ;;
+esac
+
 # 计算精度：bf16（Ampere+ 默认）| fp16（V100 等 Volta 必须用这个）| fp32
 # 🔴 V100(sm_70) 没有原生 bf16；且 torch 的 is_bf16_supported 会做「只分配张量」的弱探测而
 #    返回 True，transformers 因此**不报错**，会一路用 bf16 跑下去 —— 必须手动指定 fp16。
@@ -101,7 +111,7 @@ fi
 if [ "${missing}" -ne 0 ]; then
   echo ""
   echo "上游产物不齐，先跑："
-  echo "  ./.venv/Scripts/python.exe scripts/data/prepare_sft_data.py --domain ${DOMAIN}"
+  echo "  ${PY} scripts/data/prepare_sft_data.py --domain ${DOMAIN}"
   echo "  bash scripts/download_base_models.sh"
   exit 1
 fi
@@ -130,7 +140,11 @@ echo " Epochs / LR : ${NUM_EPOCHS} / ${LEARNING_RATE}"
 echo " sample      : ${SAMPLE}   (=-1 全量)"
 echo " freeze_LLM  : ${FREEZE_LLM}"
 echo " use_lora    : ${USE_LORA}$([ "${USE_LORA}" = "True" ] && echo "  (r=${LORA_R} targets=${LORA_TARGETS})")"
-echo " eval_frac   : ${EVAL_FRAC}   (本地冒烟请调大，见脚本注释)"
+if [ "${EVAL_BY_EPOCH}" = "True" ]; then
+  echo " eval        : 每 epoch 一次   (EVAL_BY_EPOCH=True，EVAL_FRAC 被忽略)"
+else
+  echo " eval_frac   : ${EVAL_FRAC}   (本地冒烟请调大，见脚本注释)"
+fi
 echo " precision   : ${PRECISION}   (V100/Volta 请用 fp16)"
 echo "=========================================="
 
@@ -159,6 +173,7 @@ echo "=========================================="
   --lora_dropout "${LORA_DROPOUT}" \
   --lora_target_modules "${LORA_TARGETS}" \
   --eval_frac "${EVAL_FRAC}" \
+  --eval_by_epoch "${EVAL_BY_EPOCH}" \
   --precision "${PRECISION}" \
   2>&1 | tee "./logs/sft/${EXP_ID}/sft.log"
 

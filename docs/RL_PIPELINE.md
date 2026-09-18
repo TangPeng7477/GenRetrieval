@@ -8,7 +8,7 @@
 
 | 项 | 结论 |
 |---|---|
-| **入口** | **`bash rl_run0.sh`**（根目录）。⚠️ `rl.sh` / `rl_3090.sh` 是 MiniOneRec **原版**，路径写死 `./data/Amazon/...`（本仓不存在），**不要直接用** |
+| **入口** | **`bash rl_run0.sh`**（根目录）。⚠️ `rl.sh` 是 MiniOneRec **原版**，路径写死 `./data/Amazon/...`（本仓不存在），**不要直接用**（原 `rl_3090.sh` 已删） |
 | 算法 | **GRPO** = `trl.GRPOConfig` + 本仓自定义 `minionerec_trainer.ReReTrainer`（`[实测]` trl 0.24.0 + transformers 4.57.1 下 `import` 通过） |
 | 🔴 **数据集** | **零新增**。三个在用的 Dataset 类**全部直接读 SFT 阶段已落盘的同名产物**（§1） |
 | 🔴 **模型起点** | **必须是 SFT 训练产物目录**（`outputs/<SFT_EXP_ID>/final_checkpoint`）。指回原始基座会让 SID 碎裂、约束映射全废，**且不报错**（§2 已有主动护栏） |
@@ -322,7 +322,7 @@ bash rl_run0.sh
 
 | 配置 | reward | reward_std | grad_norm | 能说明什么 |
 |---|---:|---:|---:|---|
-| `ADD_GT=False`（正式口径，与 `rl.sh` / `rl_3090.sh` 相同） | 0.0 | 0.0 | **0.0** | 只说明链路没崩，**不能**证明在学 |
+| `ADD_GT=False`（正式口径，与 V0 的 `rl.sh` 相同） | 0.0 | 0.0 | **0.0** | 只说明链路没崩，**不能**证明在学 |
 | `ADD_GT=True`（**仅诊断**，会扰动训练语义） | 0.25 | 0.5 | **22.69 / 18.58** | ✅ LoRA 梯度确实回流到了参数 |
 
 还有一条很漂亮的自洽证据：两步的 **`kl` 都是 0.0** —— 因为 LoRA 的 `lora_B` 初始化为 0，

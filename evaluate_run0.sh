@@ -30,7 +30,7 @@ set -euo pipefail
 #    evaluate.py 默认不做 add_tokens，指回 models/Qwen3-0.6B 会让 SID 碎裂、Trie 全挂。
 #    例外：显式给 SID_VOCAB_PATH 时评估端现场注册（dry-run 用，见 SFT_PIPELINE §3.5）。
 #
-# 根目录的 evaluate.sh / evaluate_3090.sh 是 MiniOneRec 原版（路径指向本仓不存在的
+# 根目录的 evaluate.sh 是 MiniOneRec 原版（路径指向本仓不存在的
 # ./data/Amazon/...），不要用。
 # ============================================================
 

@@ -14,7 +14,7 @@ set -euo pipefail
 #    embedding）。rl.py / ReReTrainer 都**不做** add_tokens / resize_token_embeddings，
 #    指回原始基座会让 SID 碎裂、约束映射全废，而且不报错。rl.py 已加主动护栏。
 #
-# 根目录的 rl.sh / rl_3090.sh 是 MiniOneRec 原版，路径指向 ./data/Amazon/...
+# 根目录的 rl.sh 是 MiniOneRec 原版，路径指向 ./data/Amazon/...
 # —— 本仓不存在，不要直接用。
 # ============================================================
 
@@ -83,7 +83,7 @@ GRAD_CKPT="${GRAD_CKPT:-True}"
 # 训练步数上限：-1 = 按 NUM_TRAIN_EPOCHS。本地冒烟设 2 即可跑完。
 MAX_STEPS="${MAX_STEPS:--1}"
 # 诊断开关：把每组里的一条候选替换成 ground truth（minionerec_trainer.py:856-873）。
-# 原版 rl.sh / rl_3090.sh 都是 False，本脚本保持同口径。
+# 原版 rl.sh 是 False，本脚本保持同口径。
 # ⚠️ 它只用于**验证梯度链**：未训练的模型 rule 奖励几乎恒为 0 ⟹ advantage 全 0 ⟹
 #    grad_norm 恒 0，看不出 LoRA 是否真的在学。开成 True 后至少有一个正样本，
 #    reward_std > 0、grad_norm > 0，才算把链路验穿。会扰动训练语义，别当正式配置用。
