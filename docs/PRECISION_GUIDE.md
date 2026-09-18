@@ -128,7 +128,7 @@ Tensor core 只在 fp16/bf16 下生效；fp32 走 CUDA core。以本项目 0.6B 
 
 ### 5.1 🔴 为什么不会自动报错（这条最坑）
 
-`transformers` 在 `bf16=True` 时会检查支持性（`.venv/…/transformers/training_args.py:1742-1747`），
+`transformers` 在 `bf16=True` 时会检查支持性（`.venv/Lib/site-packages/transformers/training_args.py:1742-1747`），
 不支持就抛 `ValueError: ... You need Ampere+ GPU with cuda>=11.0`。看起来 V100 会被友好拦下 —— **但不会**：
 
 ```python

@@ -242,6 +242,9 @@ data/Amazon23/sft_prompts_verify.json    逐 token 对齐校验报告
 > 三个 Dataset 类**从 `index/` + CSV 现场重建**（`sft.py:353` 的 `SidItemFeatDataset` 用
 > `item.json` + `index.json` 现拼 sid2title/title2sid 对；`sft.py:357` 的 `FusionSeqRecDataset` 同）。
 > 明文 prompt 渲染产物是给后续「格式消融 / 训练端直读明文」预留的，暂未接线。
+>
+> 📦 **体积与上云取舍**（哪几层必须传、哪几层可省 ≈ 1.04 GB/域）→ **README §4.1**；
+> 本文件不重复那些数字。
 
 ### 3.3 分任务训练开关 `--tasks`（2026-09-16 落地）
 
@@ -622,7 +625,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 | 早停 | `EarlyStoppingCallback(patience=3)` | 盯同一个 `eval_loss` |
 
 **`eval_frac` 的语义（最容易踩）**：Trainer 的规则 = **`< 1` 当比例、`>= 1` 当绝对步数**
-（`trainer_callback.py:157-168` `TrainerState.compute_steps` → `ceil(max_steps × 比例)`）。
+（`.venv/Lib/site-packages/transformers/trainer_callback.py:157-168` `TrainerState.compute_steps` → `ceil(max_steps × 比例)`）。
 ⚠️ **传 `1.0` 不是"每 epoch 一次"，而是"每 1 步"**。
 
 `[实测]` 各场景的实际间隔（用真实 `TrainingArguments` + 真实 `compute_steps` 算，不是手算）：
@@ -634,18 +637,18 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 | 云端 `SAMPLE=5000` | 5,000 | 4 | 16 | 79 | 237 | **12** | ~20 |
 | 本地冒烟 `SAMPLE=16` | 16 | 1 | 1 | 16 | 16 | **1** | 16 |
 
-> `max_steps = ceil(epochs × ceil(len_dataloader / grad_accum))`（`trainer.py:5682-5689`）。
+> `max_steps = ceil(epochs × ceil(len_dataloader / grad_accum))`（`.venv/Lib/site-packages/transformers/trainer.py:5682-5689`）。
 > 本地冒烟那行间隔 = 1，正是实测被 safe-delete 拦下、中断训练的原因（每步存一个 1.8 GB ckpt）。
 
 🔴 **安全网**：`save_total_limit=1` + `load_best_model_at_end=True` 本来会把**最优** ckpt 一起删掉；
-`trainer.py:4405-4413` 检测到这种情况后**自动把上限抬到 2** ⟹ 磁盘上最多留 2 个 checkpoint。
+`.venv/Lib/site-packages/transformers/trainer.py:4405-4413` 检测到这种情况后**自动把上限抬到 2** ⟹ 磁盘上最多留 2 个 checkpoint。
 
 🔴 **落盘有两份**（`sft.py:491-504`，顺序不能反）：
 1. `trainer.save_model(outputs/<EXP_ID>/)` → 根目录一份（含 tokenizer）
 2. 再存 `outputs/<EXP_ID>/final_checkpoint/` → **`evaluate.py` 指的是这里**
 
 ⚠️ **LoRA 下根目录那份是 adapter，不是完整模型**：`trainer._save` 把 `PeftModel` 也算进
-`supported_classes`（`trainer.py:4311`）→ 走 `save_pretrained` → 只落 `adapter_config.json` +
+`supported_classes`（`.venv/Lib/site-packages/transformers/trainer.py:4311`）→ 走 `save_pretrained` → 只落 `adapter_config.json` +
 `adapter_model.safetensors`。合并后的完整权重**只在 `final_checkpoint/`**。
 ⟹ **`--base_model` 永远指 `final_checkpoint/`。**
 
@@ -654,7 +657,7 @@ final_checkpoint/：完整权重 1.5G、**无 adapter_config.json 残留**、
 
 ⚠️ 两者必须协调：`load_best_model_at_end=True` 且 `eval_steps`/`save_steps` 都 `>= 1` 时，
 `save_steps` 必须是 `eval_steps` 的整数倍，否则 `TrainingArguments` 直接抛 `ValueError`
-（`training_args.py:1693-1700`）。本项目两者取**同一个变量**，天然满足。
+（`.venv/Lib/site-packages/transformers/training_args.py:1693-1700`）。本项目两者取**同一个变量**，天然满足。
 
 ---
 
@@ -694,9 +697,9 @@ micro=1 时**每次 eval 要跑 50,984 步（82 分钟）**；默认 20 次 eval
 
 🔴 **本地跑必须跳过 eval**，否则 82 分钟的 eval 比训练本身还长：
 把 `EVAL_FRAC` 给一个**大于总步数**的值即可（`steps` 策略 + `eval_steps > max_steps` ⟹ 一次都不 eval）。
-安全性已核源码：`trainer.py:2811` 是
+安全性已核源码：`.venv/Lib/site-packages/transformers/trainer.py:2811` 是
 `if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:` ——
-从没 eval 过时 `best_model_checkpoint` 恒为 `None`（`trainer_callback.py:109`），逻辑短路、
+从没 eval 过时 `best_model_checkpoint` 恒为 `None`（`.venv/Lib/site-packages/transformers/trainer_callback.py:109`），逻辑短路、
 **不报错**，训练照常结束并落 `final_checkpoint/`。
 
 **两个可选改进**（均未实施，按需启用）：

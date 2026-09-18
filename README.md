@@ -242,15 +242,25 @@ LCP ratio ≥ 150 → **163.6 ✅**；R² ≥ 0.6 → **0.8691 ✅**。
 
 | 内容 | 体积 | 入 git？ | 上云方式 |
 |---|---:|:---:|---|
-| `data/Amazon23/<域>/sft/` | 1.4 GB | ❌ | **必须上传**（或在云端按 §4.2 重建） |
+| `data/Amazon23/<域>/sft/`（**见下方分层，只传 345 MB**） | 1.4 GB | ❌ | rsync 上传，`prompts/` 与 `tasks/` 可省（≈ 1.04 GB 训练用不上） |
+| ↳ 其中 `train/valid/test/*.csv` + `index/*.json` + `info/` | **345 MB** | ❌ | **训练端真正读的只有这些**（`[实测]` 逐目录 `du`） |
+| ↳ 其中 `prompts/{chatml,alpaca}/*.jsonl` | 910 MB | ❌ | **零消费方**，别传 |
+| ↳ 其中 `tasks/*.jsonl` | 133 MB | ❌ | 只有 `scripts/data/build_sft_prompts.py` 读，别传 |
 | `models/Qwen3-0.6B` | 1.5 GB | ❌ | **不用上传** —— 云端用脚本从 ModelScope 拉，比传更快 |
 | `results/sid_e5000/` | 0.9 GB | ❌ | 只有要在云端**重建 SFT 数据**时才需要；直接训练不需要 |
 | 代码 / 文档 / 脚本 | 很小 | ✅ | `git clone` 即可 |
 
 ```bash
-# ── 本地：把 SFT 数据推上去（约 1.4 GB / 域；--relative 会保留目录结构）──
-rsync -avP --relative data/Amazon23/IandS/sft  user@<云主机>:~/GenRetrieval/
-rsync -avP --relative data/Amazon23/VG/sft     user@<云主机>:~/GenRetrieval/   # 多域
+# ── 本地：只推训练真正要的（≈ 345 MB/域，省 1.04 GB）────────────────
+rsync -avP --relative --exclude=prompts --exclude=tasks \
+  data/Amazon23/IandS/sft  user@<云主机>:~/GenRetrieval/
+rsync -avP --relative --exclude=prompts --exclude=tasks \
+  data/Amazon23/VG/sft     user@<云主机>:~/GenRetrieval/          # 多域
+# 想连渲染稿一起传就去掉 --exclude（≈ 1.4 GB/域，训练用不上）
+# 先看会传什么：上面的命令加 --dry-run，结尾 | tail -5 看汇总
+#
+# ⚠️ --exclude 用**裸名**是有意的：rsync 的 * 不跨 /，写 '*/prompts' 反而匹配不到
+#    （实际路径是 data/Amazon23/IandS/sft/prompts）。传完 du -sh 应约 345 MB。
 
 # ── 云端：克隆代码 + 建环境 ──────────────────────────────────────────
 git clone git@github.com:TangPeng7477/GenRetrieval.git && cd GenRetrieval
