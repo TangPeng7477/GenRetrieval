@@ -123,6 +123,12 @@ fi
 
 STARTED_AT="$(date -Iseconds 2>/dev/null || date)"
 
+# ---------------- 口径可追溯：记录本次生效的提示词格式与模板真源 ----------------
+# 🔴 骨架（chatml / alpaca）是**会改数字的变量**，不记进 meta 就会出现"同 EXP_ID 两行不可比"。
+#    取自 prompt_templates 唯一真源；读不到就写 unknown（不猜）。
+PROMPT_FMT="$("${PY}" -c "import prompt_templates as pt; print(pt.default_format())" 2>/dev/null || echo unknown)"
+PROMPT_SRC="$("${PY}" -c "import prompt_templates as pt; print(pt.source('${INFO_FILE}'))" 2>/dev/null || echo unknown)"
+
 echo "=========================================="
 echo " GenRetrieval Evaluate   (EXP_ID = ${EXP_ID})"
 echo "=========================================="
@@ -169,6 +175,8 @@ echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SEC
   --set "exp_id=${EXP_ID}" \
   --set "domain=${DOMAIN}" \
   --set "category=${CATEGORY}" \
+  --set "prompt_format=${PROMPT_FMT}" \
+  --set "prompt_templates_source=${PROMPT_SRC}" \
   --set "base_model=${MODEL_PATH}" \
   --set "base_model_has_sid_token_map=$([ -f "${MODEL_PATH}/sid_token_map.json" ] && echo true || echo false)" \
   --set "registered_at_eval=$([ -n "${SID_VOCAB_PATH}" ] && echo true || echo false)" \

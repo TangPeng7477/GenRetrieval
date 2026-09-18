@@ -121,8 +121,11 @@ def build_md(rows, generated_at):
     out.append("> 2. 🔴 **`HR@K` 的硬上限 = beam 宽度。** 读表必须带 `beam` 列："
                "`beam=20` 的行天然被锁在 20 个候选内，**不能与 `beam=50` 的行比强弱**。")
     out.append("> 3. **不报告 MRR** —— 生成式下 `MRR ≈ 1/beam` 是结构常数，不携带排序质量信息。")
-    out.append("> 4. **抽样行（`样本` 列 < 全量）与全量行不可混比**，样本量不同。")
-    out.append("> 5. **推理时间** = `evaluate.py` 开始生成的那一刻（`started_at`）；"
+    out.append("> 4. 🔴 **`格式` 列是会改数字的变量**（`chatml` / `alpaca` / `verbatim`）："
+               "同一模型换骨架后 `HR@K` 的变化里混着「格式效应」，"
+               "**跨行比较前先确认 `格式` 列相同**（2026-09-18 起默认 `chatml`；`—` = 该次运行没记录）。")
+    out.append("> 5. **抽样行（`样本` 列 < 全量）与全量行不可混比**，样本量不同。")
+    out.append("> 6. **推理时间** = `evaluate.py` 开始生成的那一刻（`started_at`）；"
                "**耗时** = 该步墙钟时长（不含指标计算），括号内是每样本值 —— "
                "跨行比速度看括号，它已归一化掉 batch / beam / 样本数差异。")
     out.append("")
@@ -142,9 +145,9 @@ def build_md(rows, generated_at):
         n_items = next((m.get("n_items") for _, m, _ in group if m.get("n_items")), "?")
         out.append(f"## {domain}（n_items={n_items}）")
         out.append("")
-        out.append("| EXP_ID | 模型版本 | 推理时间 | 样本 | beam | HR@1 | HR@5 | HR@10 | "
+        out.append("| EXP_ID | 模型版本 | 格式 | 推理时间 | 样本 | beam | HR@1 | HR@5 | HR@10 | "
                    "HR@20 | NDCG@10 | 耗时 | commit | 备注 |")
-        out.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|")
+        out.append("|---|---|:--:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|")
 
         for exp_id, meta, metrics in group:
             hr = metrics.get("HR") or {}
@@ -156,6 +159,7 @@ def build_md(rows, generated_at):
             out.append(
                 f"| {bold} "
                 f"| `{meta.get('base_model', '—')}` "
+                f"| {meta.get('prompt_format', '—')} "
                 f"| {fmt_time(meta.get('started_at') or meta.get('written_at'))} "
                 f"| {n_eval if n_eval else '—'} "
                 f"| {beam if beam is not None else '—'} "
