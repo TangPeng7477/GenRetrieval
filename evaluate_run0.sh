@@ -215,3 +215,22 @@ echo "      与 baseline 表（全库排序）比较前，先读 docs/EVAL_PROTO
 if [ "${METRICS_RC}" -ne 0 ]; then
   echo "⚠️ 指标 json 解析失败（原始 log 已保留）：${CALC_LOG}"
 fi
+
+# ---------------- 汇总：重扫 results/sft/ 全部 EXP_ID，重写 docs/SFT_EVAL_RESULTS.md ----------------
+# 全量重扫而非增量追加 ⟹ 幂等，永远反映最新全貌；硬串行三阶段跑完自动得到完整对照表。
+# 🔴 与 evaluate 本身解耦：eval 失败也照写（把已有结果保住），只告警。
+# ⚠️ 输出文件 `docs/SFT_EVAL_RESULTS.md` **入 git 且自动生成，勿手改**。
+if [ "${COLLECT:-1}" != "0" ]; then
+  echo ""
+  echo "---------------- 汇总 --------------------"
+  set +e
+  "${PY}" scripts/sft/collect_eval_results.py
+  COLLECT_RC=$?
+  set -e
+  echo "（汇总表已重写：docs/SFT_EVAL_RESULTS.md；单个 EXP_ID 的明细在 results/sft/${EXP_ID}/）"
+  if [ "${COLLECT_RC}" -ne 0 ]; then
+    echo "⚠️ 汇总失败（不影响本次评估产物）；可手动重跑："
+    echo "     ${PY} scripts/sft/collect_eval_results.py"
+    echo "   跳过汇总：COLLECT=0 bash evaluate_run0.sh"
+  fi
+fi

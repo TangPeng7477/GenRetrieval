@@ -639,12 +639,17 @@ cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 **流程**：
 
 ```bash
-# ① 评估：自动落 .json（逐条预测）/ .meta.json（版本+时间+耗时）/ .metrics.json（HR/NDCG）
+# 评估 + 汇总：evaluate_run0.sh 尾部已自动跑汇总（2026-09-19 起）
 bash evaluate_run0.sh
-
-# ② 汇总：扫 results/sft/ -> 重写 docs/SFT_EVAL_RESULTS.md
-./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py
+#   -> results/sft/<EXP_ID>/eval_*.{json,meta.json,metrics.json}
+#   -> docs/SFT_EVAL_RESULTS.md        （全量重扫 results/sft/，覆盖重写）
 ```
+
+**汇总已是 `evaluate_run0.sh` 的内置收尾步骤**（`evaluate_run0.sh:219-236`）：全量重扫 `results/sft/` 下
+**所有** EXP_ID 后重写表格 ⟹ 幂等、永远反映最新全貌，硬串行三阶段跑完自动得到完整对照表。
+🔴 与 eval 本身**解耦**：eval 失败也照写（保住已有结果），只告警 —— 用 `set +e` 包住，不影响退出码。
+⏭️ 想跳过：`COLLECT=0 bash evaluate_run0.sh`。手动重跑仍可：
+`${PY} scripts/sft/collect_eval_results.py`（不再需要 `./.venv/Scripts/python.exe` 这种平台相关写法）。
 
 `collect_eval_results.py` 扫描 `results/sft/*/eval_*.{meta,metrics}.json`，按同名主干配对后输出表格。
 

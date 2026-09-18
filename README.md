@@ -279,7 +279,7 @@ bash sft_run0.sh                     # 默认 IandS -> outputs/IandS-run0/
 
 # ── 云端：评估 + 汇总 ────────────────────────────────────────────────
 bash evaluate_run0.sh                # EXP_ID 自动反推 -> results/sft/IandS-run0/
-python scripts/sft/collect_eval_results.py     # -> docs/SFT_EVAL_RESULTS.md
+                                     #   尾部自动汇总 -> docs/SFT_EVAL_RESULTS.md
 
 # ── 本地：把结果拉回来（results/ 不入 git，必须手动取）──────────────
 # rsync -avP user@<云主机>:~/GenRetrieval/results/sft/ ./results/sft/
@@ -325,8 +325,7 @@ bash scripts/multimodal/run_vg_sid.sh
 # SFT 训练 / 评估 —— 若只想跑 SFT，直接看 §4.1（含数据上传与权重下载的最短路）
 python scripts/sft/verify_run0_registration.py --domain IandS   # 跑前自检（不需 GPU）
 bash sft_run0.sh
-bash evaluate_run0.sh
-python scripts/sft/collect_eval_results.py
+bash evaluate_run0.sh                # 尾部自动汇总到 docs/SFT_EVAL_RESULTS.md
 bash rl_run0.sh   # RL（GRPO）；前置依赖 SFT Run-0 的产物，见 §8.8
 ```
 
@@ -655,8 +654,9 @@ SKIP_PROBE=1 bash evaluate_run0.sh   # 跳过口径自检
 # 指标只产出 HR / NDCG（不报告 MRR —— 生成式下 ≈1/beam 是结构常数）
 cat results/sft/IandS-run0/eval_IandS_beam50.metrics.json
 
-# 5) 汇总到入 git 的结果表（record 每次评估的模型版本 / HR / NDCG / 推理时间）
-./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py   # -> docs/SFT_EVAL_RESULTS.md
+# 5) 汇总已在 evaluate_run0.sh 尾部自动执行（全量重扫 results/sft/）
+#    如需单独重跑（--root/--out 均有默认值）：
+python scripts/sft/collect_eval_results.py   # -> docs/SFT_EVAL_RESULTS.md
 
 # 4b) 不训练也能跑：evaluator 冒烟测试 + 随机下界锚点（IandS 实测 HR@K 全 0）
 EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
