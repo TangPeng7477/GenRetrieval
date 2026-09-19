@@ -327,6 +327,74 @@ IandS 域，来自 `data/Amazon23/IandS/sft/info/sid2items.json`：
 | 该调什么 | prompt / 任务配比 / 冻结策略 / LoRA 目标模块 | `num_beams` / `do_sample` / `top_p` |
 
 ⟹ 所以"**采样归推理，训练归损失与数据**"，两者不可混谈。
+推训一致性由 **prompt masking + 同一个 loss 目标**保证，与解码策略无关 —— 详见 §5.1b；
+两者性能差异的根因见 §5.1c。
+
+### 5.1b 推训一致性：靠 loss 保证，不靠"训练也加 beam"
+
+常见误解："训练没有束搜索 ⟹ 推训不一致"。**这个推理是错的**，理由分两层。
+
+**① beam 与训练正交。** beam search 解决的是"没有真值可喂时，怎么把多条路径摊开挑"。
+训练时真值就在手边，一次前向即可算全序列 loss ⟹ **训练从来不用、也不需要 beam**。
+两者共用同一个模型、同一套参数，一致性由 loss 保证，与解码策略无关。
+
+| | 训练 | 推理 |
+|---|---|---|
+| 目标 | `P(target \| prompt)` 最大似然 | 从 `P(target \| prompt)` 中搜索 |
+| 机制 | teacher forcing，一次前向 | 自回归逐 token + beam |
+| 序列计算 | **并行**（整段 shift-by-one 一次算完） | **串行**（第 t 步依赖第 t-1 步） |
+
+**② 真正对齐"训练目标 ↔ 推理目标"的是 prompt masking，不是 beam。**
+`data.py:202`（全仓 11 处同构）把 prompt 段全部置 `-100`：
+
+```python
+golden_tokens    = self.tokenizer.encode(target_item, bos=False, eos=True)
+input_prompt_len = len(tokens)          # ← 拼接前冻结边界（唯一正确取法）
+tokens           = tokens + golden_tokens
+labels           = [-100] * input_prompt_len + tokens[input_prompt_len:]
+```
+
+`-100` = PyTorch `CrossEntropyLoss` 的 `ignore_index` ⟹ 那些位置**梯度恒为 0**，
+只有 golden 段参与 loss ⟹ 模型学的正是 `P(target | prompt)`，**恰好是推理时要采样的那个分布**。
+
+🔴 **为什么 prompt 必须 mask 掉**：若 prompt 也参与 loss，模型会退化成学"复述输入"，
+推理时把历史 SID 原样吐回来 —— 生成式推荐里最典型的**塌缩 failure mode**。
+所以 mask 不是为了省算力，而是**把训练目标对齐到推理目标**。
+
+⚠️ **边界细节**：`data.py:209-211` 三行同时做 `[-max_len:]` 右截断，
+因 `labels` 与 `tokens` 等长对齐，三者一起右切不会错位。
+后果是超长序列会从**左侧**砍掉 prompt 头部（而非砍目标）：对 T1/T2（目标恒 3 token）无影响；
+对 T3（目标是长标题）理论上存在"prompt 被啃光"的极端情况。实跑未见 `data.py:205`
+的 `print(len(tokens))` 报警 ⟹ 当前数据未触上限。
+
+**③ exposure bias 是另一回事。** 训练喂真值、推理喂自生成，输入分布确实不同 ——
+这是所有自回归模型的共性，**与用不用 beam 无关**，调 beam 也治不了它。
+
+### 5.1c 为什么推理比训练慢：memory-bound vs compute-bound
+
+同一条 GPU 上，"训练一轮 46 分钟"而"全量推理极慢"并不矛盾，根因是两类负载的性质不同：
+
+| | 训练 | 推理 |
+|---|---|---|
+| 瓶颈 | **compute-bound**（算力） | **memory-bound**（显存带宽） |
+| 并行度 | 整段序列 + 整批样本一次前向，GPU 吃满 | 逐 token 串行，每步 1 次 kernel launch |
+| 权重搬运 | 一批只搬一遍 | **每个 token 搬一遍** |
+| 算术强度 | 高 | 极低（大部分时间在等内存，不在算） |
+
+三个叠加因素：
+
+1. **逐 token 串行**：第 t 步必须等第 t-1 步 ⟹ `max_new_tokens` 个 token 就是那么多次前向。
+2. **KV Cache 反复读写**：每步读回历史 KV、写入新 KV ⟹ 显存带宽成硬瓶颈。
+3. **beam 是乘数**：`batch × beam` 才是真实开销。beam=50 意味着每步实际做 50 份工作。
+
+⟹ 这解释了本项目的两条经验律：
+- **训练快** ⟹ `MICRO_BATCH_SIZE` 可开到 16；
+- **推理慢** ⟹ 必须压 `BATCH_SIZE`，**绝不压 `NUM_BEAMS`**（见 §5.4）。
+
+⚠️ **T3 的显存/耗时是长度平方级增长**：T3 输出是**完整标题文本**（数十 token），
+不是 3-token SID ⟹ KV cache 更大、解码步更多。这是 `TASKS=T3` 单独跑反而比
+`TASKS=T2a,T2b` 更吃显存的根因（2026-09-19 阶段 3 OOM 实录），
+也是它需要单独降 `MICRO_BATCH_SIZE` 的原因。
 
 ### 5.2 参数现状（2026-09-19 已显式化）
 
@@ -416,6 +484,13 @@ HR 混了"没生成出来"和"没排到前面"两件事，`beam_ceiling` 只看�
 ⚠️ `sid_gr` 本身已归档（见 §4.2 第 ③ 条的引用注意），
 但 `beam_ceiling` 这个**指标定义**仍然有效、且在正式链路里保留使用。
 
+🔴 **核验行号时不要在 Windows 上用 `Get-Content` 逐行索引**（2026-09-19 实录）。
+本仓源码是 **纯 LF**（`data.py`：CRLF=0 / LF=1776），而 PowerShell `Get-Content`
+按 CRLF 语义分割 ⟹ **读出的行与 `grep -n` 完全错位**（`:202` 在 PowerShell 里是空行、
+`:660` 读成 `class SidItemFeatDataset`）。当时差点据此误判"文档里的行号全错"。
+⟹ 读行号**一律用 Python 按 `\n` 分割**（`io.open(..., newline="")` + `raw.split("\n")`），
+并与 `grep -n` 结果**交叉比对**；两法不一致时**先查换行符，再怀疑内容**。
+
 ---
 
 ## 6. 图示
@@ -487,3 +562,6 @@ SID 数据 ──▶ SFT 训练 ──▶ 训练产物 ──▶ 评估/推理 �
 | `do_sample` 继承 | 实跑 `_prepare_generation_config()`，`False → True`，复现 warning；详见 `SFT_PIPELINE §3.5.4` |
 | `temperature` 是死参数 | `grep temperature evaluate.py` → 仅 import 行；`main()` 签名无此参数 |
 | `beam_ceiling@20 = 0.0312` | 项目记忆 `2026-09-13.md`（v2 LOO 口径）；⚠️ `sid_gr` 已移出主榜，仅作量级参考 |
+| prompt masking（`-100`） | `grep -n "\-100" data.py` ⟹ 11 处同构：`:202 / 354 / 459 / 586 / 660 / 773 / 1289 / 1405 / 1586 / 1767`；逐行读 `data.py:198-211` 确认边界在拼接前冻结。⚠️ 行号用 Python 按 `\n` 分割复核过（见下条） |
+| `-100` = `ignore_index` | PyTorch `CrossEntropyLoss(ignore_index=-100)` 默认值 |
+| T3 显存爆炸 | 2026-09-19 阶段 3（`TASKS=T3`）OOM 实录：`MICRO_BATCH_SIZE=16` 下 backward 要再 allocate 2.54 GiB（已用 20.6/23.52 GiB） |
