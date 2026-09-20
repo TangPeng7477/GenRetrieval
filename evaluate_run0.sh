@@ -19,6 +19,12 @@ set -euo pipefail
 #   日志        logs/sft/<EXP_ID>/
 #   ⟹ 光看路径就知道是哪个阶段、哪个版本；换 beam / 样本数也不会互相覆盖。
 #
+# ---- 汇总表（docs/SFT_EVAL_RESULTS.md）----
+#   收尾自动重扫 results/sft/ 重写该表（全量重扫 ⟹ 幂等）。
+#   COLLECT=auto（默认）：Linux/Darwin 写表，MINGW/MSYS/CYGWIN（本机 Windows）不写。
+#   AUTO_COMMIT=0（默认）：置 1 时写完表**自动 git commit + push**（云端用），
+#   彻底消除"表入 git 但工作区 dirty ⟹ 下次 git pull 被拒"的反复撞车。详见文末注释。
+#
 # ---- 指标口径（只看 HR / NDCG，不看 MRR）----
 #   HR@K / NDCG@K = **beam 内排名**（calc.py 的 minID < K）。
 #   未生成物品得分 -inf ⟹ 全库排序下 top-K 等价 beam 内 top-K。
@@ -309,5 +315,63 @@ else
   echo " 环境=${_uname_s} ⟹ 本机不写 docs/SFT_EVAL_RESULTS.md（该表以云端为准，详见 docs/SFT_PIPELINE.md §3.7）。"
   echo " 本次结果：results/sft/${EXP_ID}/   （明细已落盘，未汇总进表）"
   echo " 确实需要本机写表时：COLLECT=1 bash evaluate_run0.sh"
+fi
+
+# ---------------- 可选：自动提交汇总表（AUTO_COMMIT=1，默认关） ----------------
+# 🔴 [2026-09-20] 起因：汇总表**入 git**，但 collect 脚本只改文件、不提交
+#    ⟹ 云端工作区长期 dirty ⟹ 下次 `git pull` 因
+#    "Your local changes to the following files would be overwritten" 被拒，
+#    每轮评估后都要手动 `cp` 备份 + `git checkout -- docs/SFT_EVAL_RESULTS.md` + 重扫。
+#    开 AUTO_COMMIT=1 后，由云端**单向**提交并 push ⟹ 落实本表"以云端为准"的约定，
+#    撞车从根上消失（本机 COLLECT=0 本就不写表，不会反向竞争）。
+#
+# 设计要点：
+#   - **只提交这一张表**（`git add -- <path>` + `git commit -- <path>` 双重 pathspec 限定）
+#     ⟹ 不会顺手把其它未完成的改动一起带走。
+#   - **push 失败不算错**：提交已在本地、工作区已干净 ⟹ "拉取被拒"这个核心问题已解决，
+#     只告警并给出手动命令（云端可能未配 GitHub 凭据）。
+#   - 只接受 0 / 1（与 DO_SAMPLE / EVAL_BY_EPOCH / COLLECT 同款真值陷阱防护）。
+case "${AUTO_COMMIT:-0}" in
+  0|1) ;;
+  *) echo "[ERROR] AUTO_COMMIT 只接受 0 / 1（或不传=0），收到 '${AUTO_COMMIT}'"; exit 1 ;;
+esac
+
+if [ "${AUTO_COMMIT}" = "1" ]; then
+  echo ""
+  echo "---------------- 自动提交汇总表 ----------------"
+  if [ "${COLLECT}" = "0" ]; then
+    echo "[AUTO_COMMIT] 跳过：本机 COLLECT=0，未写表，无内容可提交。"
+  elif ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[AUTO_COMMIT] 跳过：当前目录不在 git 工作区内。"
+  elif git diff --cached --quiet -- docs/SFT_EVAL_RESULTS.md 2>/dev/null \
+       && git diff --quiet -- docs/SFT_EVAL_RESULTS.md 2>/dev/null; then
+    echo "[AUTO_COMMIT] 跳过：表相对 HEAD 无变化。"
+  else
+    set +e
+    git add -- docs/SFT_EVAL_RESULTS.md
+    if [ "$?" -ne 0 ]; then
+      echo "⚠️ [AUTO_COMMIT] git add 失败。手动："
+      echo "     git add docs/SFT_EVAL_RESULTS.md && git commit -m 'chore(eval): 汇总表' && git push"
+    else
+      AC_MSG="chore(eval): 自动汇总 ${EXP_ID}（${_uname_s}）"
+      git commit -m "${AC_MSG}" -- docs/SFT_EVAL_RESULTS.md
+      if [ "$?" -ne 0 ]; then
+        echo "⚠️ [AUTO_COMMIT] git commit 失败（多半是云端 git 身份未配置）。手动："
+        echo "     git config user.name  '<你的名字>'      # 仓库级，勿加 --global"
+        echo "     git config user.email '<你的邮箱>'"
+        echo "     git add docs/SFT_EVAL_RESULTS.md && git commit -m '${AC_MSG}' && git push"
+      else
+        echo "[AUTO_COMMIT] 已提交：${AC_MSG}"
+        if git push; then
+          echo "[AUTO_COMMIT] 已推送到远端。"
+        else
+          echo "⚠️ [AUTO_COMMIT] push 失败（提交已在本地、工作区已干净，拉取不会再撞车）。"
+          echo "     手动重试： git push"
+          echo "     排查凭据： ssh -T git@github.com   （应回 'Hi TangPeng7477!'）"
+        fi
+      fi
+    fi
+    set -e
+  fi
 fi
 
