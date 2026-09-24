@@ -22,6 +22,8 @@
 | 上游落点 | `data/Amazon23/<域>/sft/`（域代号 `IandS` / `VG`） | `[实测]` §3.2 |
 | 训练端 | MiniOneRec `sft.py` + `data.py` 为骨架，**本项目已改 5 处**（SID 注册 / `--tasks` 开关 / padding / `torch_compile` / `--sid_vocab_path`） | `[实测]` §3.2 · §4.6 |
 | 碰撞（语义桶） | 主榜**严格口径**（每 SID 桶取 1 个 representative），另报宽松上界 | §5.1 |
+| **当前最佳 SFT 结果** | `IandS-all`（**单阶段全开**，3 epoch）：**HR@10 = 0.0356** ／ HR@50 = 0.0856（beam=50，n=50,982） | `[实测]` §6.7 |
+| **训练顺序** | 🔴 **单阶段混合（§6.7）** —— 硬串行（§6.6）已实测灾难性遗忘，作废 | `[实测]` §6.7.1 |
 
 ---
 
@@ -257,11 +259,16 @@ data/Amazon23/<域>/sft/
 
 | 键 | 数据类 | 任务 | 输入 → 目标 | 条数 | 占比 |
 |---|---|---|---|---:|---:|
-| `T1` | `SidSFTDataset` | seq2sid | 历史 SID 序列 → 目标 **SID** | 208,999 | 44.5% |
-| `T2a` | `SidItemFeatDataset` | sid2title | SID → title | 25,847 | 5.5% |
-| `T2b` | `SidItemFeatDataset` | title2sid | title → SID | 25,847 | 5.5% |
-| `T3` | `FusionSeqRecDataset` | seq2title | 历史 SID 序列 → 目标 **title 文本** | 208,999 | 44.5% |
-| | | | **合计（默认全开）** | **469,692** | 100% |
+| `T1` | `SidSFTDataset` | seq2sid | 历史 SID 序列 → 目标 **SID** | 208,999 | 44.6% |
+| `T2a` | `SidItemFeatDataset` | sid2title | SID → title | 25,847 ⚠️ | 5.4% |
+| `T2b` | `SidItemFeatDataset` | title2sid | title → SID | 25,847 ⚠️ | 5.4% |
+| `T3` | `FusionSeqRecDataset` | seq2title | 历史 SID 序列 → 目标 **title 文本** | 208,999 | 44.6% |
+| | | | **合计（默认全开）** | **468,438** | 100% |
+
+> ⚠️ **`T2a`/`T2b` 各 25,847 是名义上界；实测两路合计 50,440** `[实测]` 2026-09-25（`IandS-all` 训练日志
+> `[TASKS] 训练集合计 468,438` + HF `Dataset(num_rows=468438)`）。
+> 差额 1,254 来自 `SidItemFeatDataset` 用 **dict** 存 `sid2title` / `title2sid`
+> ⟹ **碰撞桶与重名 title 互相覆盖**。这是上游行为，本项目未改（影响评估见 §6.4(2)）。
 
 > 注意 **T1 与 T3 共用同一份 `train CSV`**（同一条用户序列），只是目标空间不同
 > （SID vs title）—— 这正是 concat 它们的理由：让模型同时学会"SID 序列 ↔ title"两个方向。
@@ -734,6 +741,33 @@ COLLECT=0 bash evaluate_run0.sh             # 强制不写（云端临时跳过�
 ```
 
 ⚠️ `COLLECT` **只接受 `0` / `1`**（或不传 = 自动）；传别的值直接 `exit 1`（真值陷阱防护，同 `DO_SAMPLE` / `EVAL_BY_EPOCH`）。
+
+**🔴 `AUTO_COMMIT`（2026-09-25 起，默认 `0`）—— 汇总表写完自动提交，消除 `git pull` 撞车**：
+
+要解决的真实问题：这张表**入 git**，但收集脚本**只改文件、不提交** ⟹ 云端工作区长期 dirty ⟹
+下次 `git pull` 被拒（`Your local changes to the following files would be overwritten by merge`），
+每轮评估都要手动 `cp` + `git checkout --` + 重扫。
+
+```bash
+AUTO_COMMIT=1 bash evaluate_run0.sh         # 云端用：写完表自动 commit + push
+export AUTO_COMMIT=1                        # 想设为默认（只加在云端 ~/.bashrc）
+```
+
+| 设计点 | 做法 |
+|---|---|
+| **只提交一个文件** | `git add -- <表>` + `git commit -- <表>` **双重 pathspec 限定** ⟹ 不会顺手带走其它未完成的改动 |
+| **push 失败不算错** | 提交已在本地、工作区已干净 ⟹ 核心问题已解决，只告警 + 打出手动命令 |
+| **本机自动跳过** | `COLLECT=0` 时不做任何 git 操作（本机本就不写表） |
+| **同款真值陷阱防护** | 只认 `0` / `1`，其它值 `exit 1` |
+
+⚠️ **本条实现有过一次真实事故，值得记住**（已在 `5e13c54` 修复）：
+初版写成 `case "${AUTO_COMMIT:-0}"` —— **只取默认值、不赋值**，下游却用裸 `${AUTO_COMMIT}`，
+而脚本开头是 `set -u` ⟹ **不传该变量时必崩**（云端实测 `line 339: AUTO_COMMIT: unbound variable`）。
+🔴 **更值得记的是测试盲区**：初版的隔离测试里**每个用例都显式设了 `AUTO_COMMIT`**，
+所以「不传」这条**真实默认路径从未被测到**。
+⟹ 纪律：**开关变量必须先归一化赋值（`VAR="${VAR:-默认}"`）再引用；测试用例至少含 unset 一路。**
+（好消息：那次崩在**收尾**，评估本身已完整跑完、指标与汇总表正常落盘。）
+
 手动重跑仍可：`${PY} scripts/sft/collect_eval_results.py`（不再需要 `./.venv/Scripts/python.exe` 这种平台相关写法）。
 
 `collect_eval_results.py` 扫描 `results/sft/*/eval_*.{meta,metrics}.json`，按同名主干配对后输出表格。
@@ -883,13 +917,18 @@ Python 里 `bool("False") == True`，传 `False`/`1`/`yes` 这类字符串会**�
 
 | 场景 | 样本 | micro | gacc | 更新步/epoch | max_steps | **eval/save 间隔** | 存几次 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 云端默认 `TASKS=all` | 469,692 | 4 | 16 | 7,339 | 22,017 | **1,101** | ~20 |
+| 云端默认 `TASKS=all` | 468,438 | 4 | 16 | 7,320 | 21,960 | **1,098** | ~20 |
+| 同上 + **`EVAL_BY_EPOCH=True`** | 468,438 | 4 | 16 | 7,320 | 21,960 | **7,320**（=`epoch` 策略） | **3** |
 | 云端 `TASKS=T1` | 208,999 | 4 | 16 | 3,266 | 9,798 | **490** | ~20 |
 | 云端 `SAMPLE=5000` | 5,000 | 4 | 16 | 79 | 237 | **12** | ~20 |
 | 本地冒烟 `SAMPLE=16` | 16 | 1 | 1 | 16 | 16 | **1** | 16 |
 
 > `max_steps = ceil(epochs × ceil(len_dataloader / grad_accum))`（`.venv/Lib/site-packages/transformers/trainer.py:5682-5689`）。
 > 本地冒烟那行间隔 = 1，正是实测被 safe-delete 拦下、中断训练的原因（每步存一个 1.8 GB ckpt）。
+> ✅ **第 1 行是 §6.7 定版配方的 `max_steps = 21,960`，与 `IandS-all` 实测 tqdm 总数逐位一致** —— 这张表的算法已被端到端验证。
+> 🔴 **推荐用第 2 行**：`EVAL_BY_EPOCH=True` 把 eval/save 从"每 1,098 步"改成"每轮一次"，
+> 全跑完只 eval **3 次**（每次 50,984 条 ≈ 179 s）⟹ eval 总开销 **≈9 分钟**，
+> 而默认 `eval_frac=0.05` 会 eval ~20 次 ⟹ 光 eval 就要 ~1 小时。
 
 🔴 **安全网**：`save_total_limit=1` + `load_best_model_at_end=True` 本来会把**最优** ckpt 一起删掉；
 `.venv/Lib/site-packages/transformers/trainer.py:4405-4413` 检测到这种情况后**自动把上限抬到 2** ⟹ 磁盘上最多留 2 个 checkpoint。
@@ -1267,10 +1306,13 @@ T1 目标结构 512/512 通过 = [3 个 SID] + [\n, EOS]
 A 解析 : PASS   8 个用例（默认 / 单任务 / 双任务 / 非法键 / 空值 / 只给一半 -> WARN）
 B 路由 : PASS
    T1  SidSFTDataset       目标 = SID    (3-SID 命中 3)    208,999 条
-   T2  SidItemFeatDataset  目标 = SID    (title2sid 侧)     51,694 条（sid2title + title2sid）
+   T2  SidItemFeatDataset  目标 = SID    (title2sid 侧)     50,440 条（sid2title + title2sid 去重后）
    T3  FusionSeqRecDataset 目标 = TEXT   (title)           208,999 条
-C 规模 : 默认 --tasks=T1,T2a,T2b,T3 合计 469,692 条
+C 规模 : 默认 --tasks=T1,T2a,T2b,T3 合计 468,438 条
 ```
+
+> ⚠️ 上面 B/C 两行的条数是 **2026-09-25 按训练日志实测校正**过的（原探针输出为 `51,694` / `469,692`，
+> 是 `2 × 25,847` 的名义值，**未计入 dict 覆盖去重**，见 §3.3 脚注）。
 
 **`[实测]` 约束解码链路自检**（`scripts/sft/probe_constrained_decoding.py --domain IandS`）：
 
@@ -1359,8 +1401,13 @@ SID 定版是**语义桶**（不做 Sinkhorn 消解），所以一个 SID 可能
 
 | 域 | T1 seq2sid | T2（2N，双向） | T3 seq2title | 合计 | T1 : T3 : T2 |
 |---|---:|---:|---:|---:|---|
-| IandS | 208,999 | 51,694 | 208,999 | 469,692 | **44.5% : 44.5% : 11.0%** |
+| IandS | 208,999 | **50,440** | 208,999 | **468,438** | **44.6% : 44.6% : 10.8%** |
 | VG | 435,534 | 51,222 | 435,534 | 922,290 | **47.2% : 47.2% : 5.6%** |
+
+⚠️ **IandS 的 T2 实测是 50,440（不是 `2 × 25,847 = 51,694`）** `[实测]` 2026-09-25（`IandS-all` 训练日志）。
+原因：`SidItemFeatDataset` 用 **dict** 存 `sid2title` / `title2sid`（`data.py`）
+⟹ **碰撞桶与重名 title 会互相覆盖**，样本数天然小于 `2N`（去重损失 1,254 条）。
+这条是上游 `MiniOneRec` 的原有行为，本项目**未改**（§6.4(2) 已判定碰撞影响可接受）。
 
 ⚠️ 注意 **T3 和 T1 一样重** —— MiniOneRec 实际上让一半训练信号去"生成标题"而不是 SID。
 这是它和 TIGER（纯 seq2sid）最大的训练端差异，M4 消融必须单独测 T3 的去留。
@@ -1465,7 +1512,7 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 | Run | 改什么 | 回答什么问题 |
 |---|---|---|
-| **Run-0 锚点** | 单阶段，原样复刻 MiniOneRec（`--tasks` 默认全开 = T1+T2a+T2b+T3，3 epoch，LR 5e-4，`cutoff_len` 320） | Qwen3-0.6B 相对 V0（Qwen2.5-0.5B, HR@10=0.093）值多少？ |
+| **Run-0 锚点** ✅ | 单阶段，原样复刻 MiniOneRec（`--tasks` 默认全开 = T1+T2a+T2b+T3，3 epoch，LR 5e-4，`cutoff_len` 320） | Qwen3-0.6B 相对 V0（Qwen2.5-0.5B, HR@10=0.093）值多少？ → **已跑完：HR@10 = 0.0356**（§6.7） |
 | **Run-1** | Run-0 + S0 warmup | warmup 有没有用？ |
 | **Run-2** | Run-1 + S2 退火 | 退火有没有用？ |
 | **Run-3** | 码本语义初始化（`codebook.npy`）替代 S0 | 能不能省掉 warmup？ |
@@ -1482,8 +1529,14 @@ Run-0 自身是自洽的（id 只是重新编号），但：
 
 ### 6.6 `[实测]` 硬串行配方（2026-09-18 用户选定执行方式）
 
-> ⚠️ **§6.1 否决过硬串行，本节不推翻它** —— 而是把被选定的做法写清楚并记账。
-> 引用这组数字时必须写明「**硬串行、有遗忘风险**」，不能与 Run-0 的混合训练混在一起归因。
+> 🔴🔴 **2026-09-25 实测结案：硬串行作废，配方不再推荐执行。**
+> 本节保留为**已归档的历史配方 + 失败证据**，不要再照它跑训练。
+> - **§6.1 的预言被实测确认**：`TASKS=T2a,T2b` 单训 3 轮，在同一 T1 验证集上
+>   `eval_loss` **3.2790 → 4.1241 → 4.2220 → 4.2836`（每轮都在变差）——灾难性遗忘的**直接测量**。
+> - 端到端后果：`HR@10` **0.0038 → 0.0005（−87%）**，`HR@1` **0.0008 → 0.0000**（50,982 次一次没中）。
+> - 替换方案 = **§6.7 单阶段全开**，`HR@10 = 0.0356`（**+9.4×**）。
+>
+> ⚠️ 引用本节这组数字时必须写明「**硬串行、已实测灾难性遗忘**」，不能与 §6.7 的混合训练混在一起归因。
 
 **要改的参数不是"只一个"**：
 
@@ -1541,7 +1594,7 @@ MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
   而阶段 2 的 `TASKS=T1,T3` 里 T3 是「历史 SID → 目标 title」，与召回质量不是一回事
   ⟹ **会在 T1 还在进步时被别的任务的 loss 停掉**。详见 §3.9「早停的两个问题」。
 - 🔴 **硬串行的记账前提是每阶段完整跑完** —— 否则「总算力与单次全开相当」这句话就不成立
-  （§6.2 的 469,692 行 × 3 epoch 是按完整轮数算的）。
+  （§6.2 的 468,438 行 × 3 epoch 是按完整轮数算的）。
 - **语义变化**：关早停后 `load_best_model_at_end` 也置 `False`（HF 要求二者同开同关）
   ⟹ **`final_checkpoint` = 最后一轮**而非 best。这正是接续训练要的语义
   （下一阶段要"接着上阶段末尾继续"，不是"回到上阶段最优点"）。
@@ -1552,11 +1605,118 @@ MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
 
 | 项 | 说明 |
 |---|---|
-| 总算力 | **与单次全开相当**：数据总量仍是 469,692 行 × 3 epoch（§6.2），只是分三段跑、多两次 LR warmup 与存档 |
+| 总算力 | **与单次全开相当**：数据总量仍是 468,438 行 × 3 epoch（§6.2），只是分三段跑、多两次 LR warmup 与存档 |
 | 新增风险 ① | **灾难性遗忘**（硬切、无 replay）—— 这是 §6.1 否它的主因 |
 | 新增风险 ② | 三段各有自己的 LR 曲线与 checkpoint，**每段都要单独评估**才有轨迹 |
 | 新增风险 ③ | **顺序是变量**：`T2→T1+T3→T1` 与 `T1→T2→T3` 结果不同，只能与"同顺序"的组对比 |
-| 与 §6.5 的关系 | `Run-0…Run-3` 仍**先跑 Run-0 锚点**；本条是**并行的支线**（用 `hs*` 前缀），**不要**与 `Run-*` 混用同一 EXP_ID 空间 |
+| 与 §6.5 的关系 | `Run-0…Run-3` 仍**先跑 Run-0 锚点**；本条是**并行支线**（用 `hs*` / `o*` / `P1~P4` 前缀），**不要**与 `Run-*` 混用同一 EXP_ID 空间 |
+
+---
+
+### 6.7 `[实测]` 单阶段全开（Run-0）—— **2026-09-25 定版，取代 §6.6**
+
+> ✅ **这是本项目当前唯一推荐的 SFT 配方**，对应 §6.2 的 **S1 主训练** + §6.5 的 **Run-0 锚点**。
+> 它同时补齐了此前一直空着的 Run-0 锚点。
+
+**配方（唯一变量 = 不传 `TASKS`，即单阶段 `ConcatDataset` 全局混洗）**：
+
+```bash
+cd ~/GenRetrieval && git pull && source .venv/bin/activate
+
+# TASKS 不传 = 默认 T1,T2a,T2b,T3，单阶段拼接 + shuffle(seed=42)
+env EVAL_BY_EPOCH=True EARLY_STOP_PATIENCE=0 MICRO_BATCH_SIZE=16 \
+    RUN_TAG=all bash sft_run0.sh
+#  -> outputs/IandS-all/
+```
+
+| 项 | 值 |
+|---|---|
+| EXP_ID | `IandS-all` |
+| 训练集 | **468,438** 条（T1 208,999 + T2 50,440 + T3 208,999） |
+| 步数 / 时长 | 21,960 步 · **5.43 h**（1.124 it/s）· `train_loss` 全程均值 0.7297 |
+| 训练口径 | 3 epoch · LR 5e-4 cosine · `cutoff_len` 320 · micro 16（accum 4） |
+| 评估口径 | n=50,982（全量）· beam=50 · `BATCH_SIZE` 12 · `max_new_tokens` 8 · SDPA · chatml · `do_sample=False` |
+| 记录时的 `git_commit` | `5dde706` |
+
+**实测结果**：
+
+| 指标 | P1（T1 单任务） | **IandS-all（单阶段全开）** | 倍数 |
+|---|---:|---:|---:|
+| HR@1 | 0.0008 | **0.0067** | 8.4× |
+| HR@5 | 0.0028 | **0.0226** | 8.1× |
+| **HR@10** | **0.0038** | **0.0356** | **9.4×** |
+| HR@20 | 0.0052 | **0.0541** | 10.4× |
+| HR@50 | 0.0088 | **0.0856** | 9.7× |
+| NDCG@10 | 0.0023 | **0.0189** | 8.2× |
+
+**全 K 一致 8~10×** ⟹ 是真实能力跃迁，不是某个 K 上的偶然。
+
+**与 baseline / 公开数字对照**（⚠️ 见下方口径边界）：
+
+| 对象 | HR@10 | 差距 |
+|---|---:|---|
+| `IandS-all`（本项目） | **0.0356** | — |
+| `content_ann`（本项目 baseline） | 0.0288 | ✅ **+23.6%** |
+| `twotower_id` | 0.0345 | ✅ +3.2% |
+| `gru4rec` | 0.0361 | ❌ −1.4% |
+| `sasrec`（本项目最强 baseline） | 0.0395 | ❌ −9.9% |
+| ETEGRec（Amazon23 IandS，**同为 beam 内**） | 0.0418 | ❌ −14.8% |
+| TIGER（23 版复现） | 0.0422 | ❌ −15.6% |
+| MTGRec（23 版最佳公开） | 0.0506 | ❌ −29.6% |
+
+**结论**：从「差一个量级」（0.0038，−91%）走到「差 15%」，已进入 `EVAL_PROTOCOL §5` 闸门 2
+（> `content_ann`）通过、闸门 1（> `sasrec`）与闸门 3（≥0.0422）**尚差 ~10~16%**。
+
+#### 6.7.1 `eval_loss` 三水位判据（**诊断 T1 是否真在学的唯一廉价探针**）
+
+🔴 **`train` 里打的那个 `loss` 判不了 T1** —— HF 的 `loss` 是**token 级平均**，而
+T1 目标恒 5 token、T3/T2a 目标是完整标题（实测均 101.9 字符 ≈ 26 token）
+⟹ 混合 loss 里**约 84% 的权重来自"标题生成"**，它衡量的几乎全是 T3。
+
+**唯一可靠的判据是 `eval_loss`** —— 因为 `sft.py:471` 是
+`val_data = SidSFTDataset(train_file=eval_file, ...)` ⟹ **验证集恒为 T1 格式，与 `TASKS` 无关**
+⟹ 跨 run 的 `eval_loss` **完全同口径**，可直接互比。三个水位：
+
+| 水位 | 算式 | 值 | 含义 |
+|---|---|---:|---|
+| **纯格式** | `3 × ln(256) / 5` | **3.3271** | 每层对 256 个码均匀（只学会"这是个 SID token"） |
+| **结构感知** | `ln(256×72.9×1.3)/5` | **2.0194** | 再学会层级约束（L1=256／L2 均 72.9／L3 均 1.3，§`DECODING_STRATEGIES §4.1`） |
+| — | `ln(24766)/5`（直接用唯一 SID 数） | 2.0234 | 与上一行互校，**两条路一致** ⟹ 判据可信 |
+
+**实测落点**：
+
+| 阶段 | `eval_loss` | vs 结构水位 |
+|---|---:|---:|
+| P1（T1 单任务）epoch-1 / epoch-3 | 3.2935 / 3.2790 | +1.274 / **+1.260**（**卡在纯格式水位**） |
+| **IandS-all** epoch-1 / **epoch-3** | 2.1165 / **1.8488** | +0.097 / **−0.171** ✅ |
+
+⟹ **单阶段全开不仅把模型从"不会 SID"拉到"会用 SID"，还跌破了结构水位** ——
+即开始在合法 SID 上做**个性化排序**，不再只是均匀。换算：有效候选集 24,262 → 约 10,300（≈2.35×）。
+
+⚠️ **但不要用 loss 外推 HR**：CE（proper scoring rule）与 top-K 排序**不是严格单调关系**。
+本例两者同向，是实测确认的；换配置时必须**重新实测 HR**。
+
+#### 6.7.2 天花板诊断
+
+```
+HR@50 = 0.0856  ⟹  91.4% 的目标根本没被生成出来（beam 内不存在）
+HR@10 / HR@50 = 41.6%  ⟹  已生成的那部分里，排序效率尚可
+```
+
+⟹ 瓶颈**一半在"生成不出来"**（beam 宽度 + 生成质量），一半在排序。
+下一步用 `beam_sweep.sh` 回答「加宽 beam 还有多少空间」（只报 `beam_ceiling`，见该脚本头部说明）。
+
+#### 6.7.3 口径边界（对外引用前必读）
+
+1. 🔴 **0.0356 是宽松口径** —— `calc.py` 按 **SID 字符串**匹配，而本项目 `sid_raw` 是语义桶
+   （IandS 平均桶 3.00 个商品）⟹ **同桶商品都算命中**，绝对值偏高。
+   按全仓「严格 + 宽松双报」纪律，**对外引用须补严格口径**。
+   （`phonism/genrec` 的 README 就因同一原因把 OneRec-SFT 的数字暂扣了。）
+2. ⚠️ **与 `baseline/` 表对照的合法范围**：`baseline` 是**全库排序**（候选 25,847），
+   本表是 **beam 内排名**（候选 ≤50）——两者候选集不同。上表的比较
+   **只能读作"量级是否同梯队"**，严格可比性见 `EVAL_PROTOCOL §3.4 / §5`。
+3. ⚠️ `max_new_tokens` 本次为 **8**，而 `IandS-P1-T1` 的 meta 记 **5**。
+   因 Trie 强制 step4=EOS ⟹ 生成总在第 4 步停，**两者结果等价**；但同一项目出现两个值属口径隐患，建议统一为 5。
 
 ## 7. 待办 / 未做（诚实边界）
 
@@ -1569,7 +1729,8 @@ MODEL_PATH=outputs/IandS-hs3-T1/final_checkpoint bash evaluate_run0.sh
 | raw 桶 vs 唯一化的端到端消融 | ⏸ | `sid_sk.npy` 已存档，切口径重跑即可 |
 | Qwen3-0.6B 权重 | ✅ | `[实测]` 2026-09-16 已下并校验通过：1,503,300,328 B、sha256 `f47f7117…6874b` **逐位一致**（§4.5）。⚠️ **teacher `Qwen3-1.7B` 仍未下载**（4.06 GB） |
 | SID 词表注册 | ✅ | `[实测]` 已定版 + 落地（§6.4(4) / §4.6）；自检脚本 `scripts/sft/verify_run0_registration.py --domain IandS` 全绿 |
-| 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **469,692** 条（原 `probe_task_switch.py` 探针已移除） |
+| 分任务训练开关 | ✅ | `[实测]` `--tasks` 已落地（§3.3）：默认四路全开等价 MiniOneRec，合计 **468,438** 条（原 `probe_task_switch.py` 探针已移除） |
+| **单阶段全开 Run-0** | ✅ | `[实测]` 2026-09-25 跑完（`IandS-all`）：**HR@10 = 0.0038 → 0.0356（+9.4×）**，`eval_loss` 3.2790 → 1.8488（跌破结构水位）。**已取代硬串行**，见 §6.7 |
 | 约束解码链路核验 | ✅ | `[实测]` §3.4：Trie 5 步 `[256,98,1,1,1]` 与训练 target 逐位对应；`prefix_index=3` 前提成立；**顺带修掉上游遗留的 train/eval prompt 不一致**。回归检查已接入 `evaluate_run0.sh`（`probe_constrained_decoding.py` 保留） |
 | T4 `text2sid` 训练端接线 | ⏸ | `data.py` **无对应 Dataset 类**，要用需新写（原 `tasks/text2sid.jsonl` 中间产物已随渲染脚本一并删除） |
 | **提示词模板单一真源** | ✅ | `[实测]` 2026-09-18 收敛（§3.1）：3 份实现 → `config/prompt_templates.json` + `prompt_templates.py`；7 个在用 Dataset 类全部改走真源，`data.py` 复验 BAD=0 |

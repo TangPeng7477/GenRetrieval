@@ -7,14 +7,16 @@
 在 [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) 开源框架上做的系统性升级：
 **Amazon Reviews 2023 + 图文多模态 → 门控融合 → RQ-VAE 语义 ID（SID）→ LLM 生成式召回**。
 
-> **当前进度（2026-09-16）**：**数据与 SID 构建阶段已在两个域上定版**
-> —— 域 A `Industrial_and_Scientific`（25,847 商品）与域 B `Video_Games`（25,611 商品）
-> 各跑完完整 pipeline（M1 / M2 完成）；**召回阶段基线矩阵已建好并本地实跑**（见 §7 与 [`baseline/`](baseline/)）；
-> **SFT 数据集（M3）双域已产出并通过体检**；基座权重已下载校验、**SID 词表注册已落地并自检通过**。
-> 下一步 = **IandS 单域 Run-0 训练**（先跑通一域，再考虑 VG），见 §8 与
-> [`docs/SFT_PIPELINE.md`](docs/SFT_PIPELINE.md)。
+> **当前进度（2026-09-25）**：**数据 / SID / 基线矩阵 / SFT 数据集（M1~M3）全部定版**；
+> **IandS 域 SFT 主训练（Run-0）已跑完并评估** —— 单阶段全开（T1+T2a+T2b+T3 混合，3 epoch）
+> 拿到 **HR@10 = 0.0356 / HR@50 = 0.0856**（beam=50，n=50,982），
+> 相比「只训 T1」的 0.0038 **提升 9.4×**，已超过本项目 `content_ann` 基线（0.0288）。
+> 🔴 同时实测证伪了「硬串行多阶段」路线（灾难性遗忘，`HR@1` 归零），详见
+> [`docs/SFT_PIPELINE.md §6.7`](docs/SFT_PIPELINE.md)。
+> **下一步** = beam 扫描定天花板 → 辅助任务消融 → VG 域复验。
 > 本 README 讲"项目是什么、SID 怎么定版的、怎么复现"；
-> 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)**。
+> 完整实验与结论见 **[docs/SID_PIPELINE.md](docs/SID_PIPELINE.md)** 与
+> **[docs/SFT_PIPELINE.md](docs/SFT_PIPELINE.md)**。
 
 ---
 
@@ -553,9 +555,13 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 | 任务 | 输入 → 输出 | 样本数（I&S / VG，train） |
 |---|---|---|
 | **T1 `seq2sid`**（主） | 历史 SID 序列 → 目标 SID，**提示词与 MiniOneRec 逐字一致** | 208,999 / 435,534 |
-| **T2 `sid↔title`** | 物品标题 ↔ SID 双向 | 51,694 / 51,222 |
+| **T2 `sid↔title`** | 物品标题 ↔ SID 双向 | **50,440** ⚠️ / 51,222 |
 | **T3 `seq2title`** | 历史 SID → 目标标题 | 同 T1 |
 | **T4 `text2sid`**（新增） | `title+brand+categories+features` → SID | 25,847 / 25,611 |
+
+> ⚠️ I&S 的 T2 实测是 **50,440**（`[实测]` 2026-09-25 训练日志），不是名义值 `2 × 25,847 = 51,694`
+> —— `SidItemFeatDataset` 用 dict 存 `sid2title` / `title2sid`，**碰撞桶与重名 title 会互相覆盖**。
+> VG 的 51,222 是旧实测值，未复验。
 
 ### 8.3 体检实测（原 `scripts/data/verify_sft_data.py` 与 `sft_verify.json` 已于 2026-09-18 移除，数字为当时实测）
 
@@ -608,7 +614,7 @@ LC-Rec 的对齐任务思想（`item2index`/`index2item`/`fusionseqrec`）被吸
 | 任务 | 样本数 I&S / VG | total_max（含 completion+EOS） | >320 |
 |---|---:|---:|---:|
 | T1 `seq2sid` | 208,999 / 435,534 | 179 / 179 | 0 / 0 |
-| T2 `sid↔title` | 51,694 / 51,222 | 161 / 143 | 0 / 0 |
+| T2 `sid↔title` | 50,440 ⚠️ / 51,222 | 161 / 143 | 0 / 0 |
 | T3 `seq2title` | 208,999 / 435,534 | 277 / 251 | 0 / 0 |
 | T4 `text2sid` | 25,847 / 25,611 | **391 / 362** | **18 / 3** |
 
@@ -677,7 +683,7 @@ EXP_ID=dryrun-untrained MODEL_PATH=models/Qwen3-0.6B \
 | `data/Amazon23/IandS/sft/index/IandS.index.json` | `sft.py --sid_index_path` |
 | `data/Amazon23/IandS/sft/index/IandS.item.json` | `sft.py --item_meta_path` |
 | `data/Amazon23/IandS/sft/info/sid_vocab.json` | `sft.py --sid_vocab_path`（**本项目新增**，留空自动推导） |
-| （无对应上游文件） | `sft.py --tasks`（**本项目新增**）：默认四路全开 = 469,692 条，行为等价 MiniOneRec；传子集做任务消融 |
+| （无对应上游文件） | `sft.py --tasks`（**本项目新增**）：默认四路全开 = **468,438** 条，行为等价 MiniOneRec；传子集做任务消融 |
 | `data/Amazon23/IandS/sft/test/IandS_5_test.csv` | `evaluate.py --test_data_path` |
 | `data/Amazon23/IandS/sft/info/IandS.item_info.txt` | `evaluate.py --info_file` |
 
