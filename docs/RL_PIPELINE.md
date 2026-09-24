@@ -50,11 +50,12 @@ prompt 全在 `pre()` 里现场拼：
 ## 2. 入口：`rl_run0.sh`
 
 ```bash
-# 默认：IandS 单域，从 IandS-run0 的 SFT 产物接着训
-bash rl_run0.sh
+# ✅ 当前唯一有合格起点的用法：SFT 定版产物 IandS-all（2026-09-25）
+SFT_EXP_ID=IandS-all bash rl_run0.sh
+#   = MODEL_PATH=outputs/IandS-all/final_checkpoint
 
-# 换 SFT 来源
-SFT_EXP_ID=IandS-S0 bash rl_run0.sh
+# 默认值（IandS-run0）现在**没有对应产物**，直接用会撞"上游产物不齐"
+bash rl_run0.sh          # ⚠️ 会 exit 1
 
 # 换奖励 / 消融标签
 REWARD_TYPE=ranking RUN_TAG=R1 bash rl_run0.sh
@@ -277,7 +278,7 @@ PyTorch 的 checkpoint 要求该段计算的输入 `requires_grad=True`；LoRA �
 ### 6.5 本地配方（3050Ti 4 GB，实测可跑）
 
 ```bash
-MODEL_PATH=outputs/IandS-run0/final_checkpoint \
+MODEL_PATH=outputs/IandS-all/final_checkpoint \
 TRAIN_BATCH_SIZE=4 NUM_GENERATIONS=4 \
 USE_LORA=True GRAD_CKPT=True \
 LORA_MODULES_TO_SAVE="" \
@@ -338,6 +339,98 @@ step 0 时 adapter 输出恒为 0 ⟹ 策略与参考模型**逐位相同**，KL
 | 单个 checkpoint | ≈ **6 GB**（权重 + fp32 优化器状态） | `[设计推算]` |
 | checkpoint 总量 | `save_total_limit=3` → ~18 GB，加 root + `final_checkpoint` 两份 ≈ **21 GB** | 原版 `save_total_limit=20` 会到 ~120 GB，**本仓已下调** |
 
+### 6.8 `[实测+推算]` 起点换成 `IandS-all` 之后：RL 第一次能真学到东西
+
+> 2026-09-25：SFT 定版产物 `outputs/IandS-all/final_checkpoint` 就位（`HR@10 = 0.0356`）。
+> 这让 §6.6 那条「reward 恒 0 是预期的」**不再无条件成立**。
+
+**① `ADD_GT` 不再是必需品**：rule 奖励 =「生成 SID 与目标 SID 完全相等」，
+未训练基座命中率 ~4e-5 ⟹ 恒 0；而 `IandS-all` 的 `HR@1 = 0.0067` ⟹ **正式配置 `ADD_GT=False`
+也应该能看到 `reward > 0` / `reward_std > 0` / `grad_norm > 0`**。
+🔴 这是本轮最强的判据：**不需要**用 `ADD_GT=True` 扰动训练语义去验梯度链了。
+
+**② 但稀疏度是真瓶颈**（别指望一步到位）：
+
+| 配置 | 单条候选命中率 | **组（G=4）至少一个命中** | 怎么算的 |
+|---|---:|---:|---|
+| Top-4 beam（`BEAM_SEARCH=True`，默认） | — | ≈ **1.9%** | 4 条候选**就是** top-4（确定性、互不重复）⟹ 直接 = `HR@4`（`HR@3`=0.0159 / `HR@5`=0.0226 插值） |
+| 采样（`BEAM_SEARCH=False`） | ≈ `HR@1` = **0.0067** | ≈ **2.7%** | 4 条独立同分布 ⟹ `1 − (1 − 0.0067)^4` |
+
+⟹ **约 97~98% 的组 advantage 全 0**，只有极小一部分 prompt 贡献梯度。
+🔴 注意 beam 那一行**不能**按独立采样算（我曾算成 7.3%，错）—— beam 的 G 条是同一个搜索的
+top-G，是"整体命中率"而不是"G 次独立机会"。
+且 beam 搜索是**确定性**的 ⟹ 目标不在 top-4 里就**永远没有探索机会**（经典 exploration 缺失）。
+真实增益要靠 `MAX_STEPS` 堆量，或后续上采样 / 更大 `NUM_GENERATIONS`。
+
+**③ 成本（务必先限步，别直接全量）** `[推算]`：
+
+```
+训练数据 = 208,999(SidDataset) + ~50,440(RLTitle2Sid) + 10,000(RLSeqTitle2Sid) ≈ 269,439
+步数     = 269,439 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC_STEPS 8) = 8,420 步/epoch × 2 epoch = 16,840 步
+单步     = 3050Ti [实测] 8.45 s（16 序列 × grad_acc 8）⟹ 4090D 按 3~4× 估 ≈ 2~3 s/步
+⟹ 全量约 9~14 h，另加 ~10 次训练内 eval
+```
+
+🔴 **`TEST_DURING_TRAINING` 的 eval 是隐藏开销**：`EVAL_STEP=0.0999` ⟹ 约 10 次全量验证集
+（50,984 条）beam=10 评估；按 `evaluate_run0.sh` 实测（beam=50 全量 2.6 h）折算 beam=10 ≈ 30 min/次
+⟹ **光 eval 就 ~5 h**。短跑务必调大 `EVAL_STEP`（如 `0.5`）或先关掉。
+
+### 6.9 推荐跑法：三阶段（先通链路，再要数字）
+
+> `EXP_ID = <域>-<RUN_TAG>`（`rl_run0.sh:37`），所以换 `RUN_TAG` 就能隔离产物。
+
+**阶段 A · 冒烟（约 5 min，唯一目标是验链路）**
+
+```bash
+cd ~/GenRetrieval && git pull && source .venv/bin/activate
+
+MODEL_PATH=outputs/IandS-all/final_checkpoint \
+RUN_TAG=rlsmoke MAX_STEPS=5 \
+TEST_DURING_TRAINING=False SAVE_STEPS=999 EVAL_STEP=999 \
+bash rl_run0.sh
+#  -> outputs/IandS-rlsmoke/
+```
+
+**判据（4 条全过才算通）**：
+
+| # | 看什么 | 期望 | 不过说明什么 |
+|---|---|---|---|
+| 1 | 前置检查 | 无 `[MISSING]` / `[BAD]` | `final_checkpoint` 缺文件或 tokenizer 里没有 `<a_0>` |
+| 2 | `completion_length` | **5.0**，且 `categorical_diversity 1.0` | 约束解码没生效（生成长度失控） |
+| 3 | `reward` / `reward_std` | **> 0**（量级 0.01~0.07，见 §6.8②） | 起点模型或约束映射有问题 |
+| 4 | `grad_norm` | **> 0** | 梯度没回流（检查 `GRAD_CKPT` + `enable_input_require_grads`） |
+
+⚠️ 若 3/4 仍恒 0 ——先用 `ADD_GT=True` 跑同样的 5 步做**对照**（§6.6）：
+`ADD_GT` 下有梯度而正常配置没有 ⟹ 说明是**奖励太稀疏**而非链路坏；两边都 0 ⟹ 链路坏。
+
+**阶段 B · 短跑（1~2 h，要轨迹）**
+
+```bash
+MODEL_PATH=outputs/IandS-all/final_checkpoint \
+RUN_TAG=rl0 MAX_STEPS=300 EVAL_STEP=0.5 \
+TEST_DURING_TRAINING=True TEST_BEAM=10 \
+bash rl_run0.sh
+#  -> outputs/IandS-rl0/
+```
+
+- `MAX_STEPS=300` 把训练钉在 ~15 min；`EVAL_STEP=0.5` ⟹ 只 eval 2 次（否则按 §6.8③ 光 eval 就 ~5 h）。
+- 🔴 训练内 `HR@k` 是 **beam=10 的训练内搜索**——**只能看本 run 内部的相对轨迹**，
+  与 `evaluate_run0.sh` 的 beam=50 全量、**以及 baseline/ 全库排序，三者两两不可横比**。
+
+**阶段 C · 口径对齐评估（这才是判决点）**
+
+```bash
+# 先 5000 条冒烟（~15 min），确认后再上全量（~2.6 h）
+MODEL_PATH=outputs/IandS-rl0/final_checkpoint MAX_SAMPLES=5000 BATCH_SIZE=12 bash evaluate_run0.sh
+MODEL_PATH=outputs/IandS-rl0/final_checkpoint BATCH_SIZE=12 bash evaluate_run0.sh
+```
+
+判据：**与 `IandS-all` 的 `HR@10 = 0.0356` 比**（同 beam=50、同 n、同宽松口径 ⟹ 唯一合法对照）。
+
+**显存兜底**：默认 `USE_LORA=False`（全参）。⚠️ 全参下 `ref_model` 会**真多一份权重**
+（§6.1：`not is_peft_model` ⟹ `create_reference_model`）⟹ 24 GB 应够（§6.7 估 8~12 GB），
+若 OOM 就 `USE_LORA=True`（参考模型靠 `disable_adapter()` 复用，不额外占权重）。
+
 ---
 
 ## 7. 本项目对 MiniOneRec 原版的改动清单
@@ -370,10 +463,10 @@ step 0 时 adapter 输出恒为 0 ⟹ 策略与参考模型**逐位相同**，KL
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | **SFT Run-0** 产出 `outputs/IandS-run0/final_checkpoint` | ⏸ **硬阻塞**（RL 无从接着训） |
+| 1 | **SFT 定版产物** `outputs/IandS-all/final_checkpoint` | ✅ **2026-09-25 已就位**（`HR@10=0.0356`，§6.8）⟹ RL 硬阻塞解除 |
 | 2 | 3090 上实测**全参** RL 显存与单 checkpoint 体积（§6.6 仍是推算） | ⏸ |
 | 2b | 本地 LoRA 冒烟 | ✅ `[实测]` 见 §6.5：`exit=0`，峰值 2.80 GiB、单步 8.45 s；梯度链由 §6.6 的 `ADD_GT` 诊断验穿 |
-| 2c | 用**真实 SFT 产物**（而非伪产物）跑一次本地冒烟 | ⏸ 等 `outputs/IandS-run0/final_checkpoint` |
+| 2c | 用**真实 SFT 产物**跑一次冒烟（伪产物阶段结束） | ⏸ **下一步**：§6.8 ③ 的三阶段跑法 |
 | 3 | `semantic` 奖励的 `ada_path`（item embedding pickle） | ⏸ 缺 |
 | 4 | `sasrec` 奖励的 `cf_path`（根 `sasrec.py` 的权重） | ⏸ 缺 |
 | 5 | 分层奖励（R1）/ OPD 蒸馏（R2/R3） | ⏸ 见 UPGRADE_PLAN §6 |
