@@ -331,9 +331,14 @@ fi
 #   - **push 失败不算错**：提交已在本地、工作区已干净 ⟹ "拉取被拒"这个核心问题已解决，
 #     只告警并给出手动命令（云端可能未配 GitHub 凭据）。
 #   - 只接受 0 / 1（与 DO_SAMPLE / EVAL_BY_EPOCH / COLLECT 同款真值陷阱防护）。
-case "${AUTO_COMMIT:-0}" in
+# 🔴 必须先**归一化赋值**再引用（`set -u` 下裸引用未定义的变量会直接崩）。
+#    2026-09-25 云端实测踩坑：原先写成 `case "${AUTO_COMMIT:-0}"`，
+#    下游却用裸 `${AUTO_COMMIT}` ⟹ 不传该变量时 `evaluate_run0.sh: line 339: AUTO_COMMIT: unbound variable`。
+#    ⚠️ 教训：隔离测试若**总是显式设置**该变量，就永远测不到"不传"这条路径。
+AUTO_COMMIT="${AUTO_COMMIT:-0}"
+case "${AUTO_COMMIT}" in
   0|1) ;;
-  *) echo "[ERROR] AUTO_COMMIT 只接受 0 / 1（或不传=0），收到 '${AUTO_COMMIT}'"; exit 1 ;;
+  *) echo "[ERROR] AUTO_COMMIT 只接受 0 / 1（不传=0），收到 '${AUTO_COMMIT}'"; exit 1 ;;
 esac
 
 if [ "${AUTO_COMMIT}" = "1" ]; then
