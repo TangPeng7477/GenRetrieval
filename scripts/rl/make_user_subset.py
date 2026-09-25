@@ -4,7 +4,7 @@
 为什么需要它
 ------------
 全量 run 里「训练用户 ⊇ 评估用户」= **100%**（每个用户的最后一条是 test，其余是 train）。
-而 `MAX_STEPS` 前缀方案只看得到约 **7%** 交集（470 步≈3,700 用户 vs 评估 5,000 用户）
+而 `MAX_STEPS` 前缀方案只看得到约 **7%** 交集（1,875 步 ≈ 15,000 行 ≈ 3,700 用户 vs 评估 5,000 用户）
 ⟹ 小规模迭代不是全量 run 的忠实缩放版。本脚本让**训练用户 ≡ 评估用户**。
 
 🔴 为什么只切 T1/T3（配合 `RL_TASKS=T1,T3` 使用）
@@ -23,10 +23,15 @@ RL 侧三路数据源不同：
 产出（与源文件同目录；文件名一律 ASCII）
     train/<DOMAIN>_5_train.<TAG>.csv
     test/<DOMAIN>_5_test.<TAG>.csv
-    info/<DOMAIN>.user_subset.<TAG>.json    清单（seed / 用户数 / 用户列表 / 行数，供 provenance）
+    valid/<DOMAIN>_5_valid.<TAG>.csv     ← 若源 `valid/` 存在则一并切（RL 内部验证集 `EVAL_FILE`）
+    info/<DOMAIN>.user_subset.<TAG>.json 清单（seed / 用户数 / 用户列表 / 行数，供 provenance）
+
+🔴 **三支都切，不要用 test 去顶 valid** —— `valid`（每用户**倒数第二条**）与 `test`（**最后一条**）
+是 LOO 的两个不同 split；拿 test 当训练内验证集等于把最终报告集当监控集用。
 
 然后这样跑（训练用户 ≡ 评估用户）：
-    TRAIN_FILE=<那支 train csv> RL_TASKS=T1,T3 RL_T3_SAMPLE=<按比例算> ... bash rl_run0.sh
+    TRAIN_FILE=<那支 train csv> EVAL_FILE=<那支 valid csv> \
+    RL_TASKS=T1,T3 RL_T3_SAMPLE=<按比例算> ... bash rl_run0.sh
     TEST_FILE=<那支 test csv> ... bash evaluate_run0.sh
 
 实现说明
@@ -97,6 +102,7 @@ def main():
     ap.add_argument("--data-root", default="data/Amazon23", help="默认 data/Amazon23")
     ap.add_argument("--train-csv", default="", help="覆盖默认的 train CSV 路径")
     ap.add_argument("--test-csv", default="", help="覆盖默认的 test CSV 路径")
+    ap.add_argument("--valid-csv", default="", help="覆盖默认的 valid CSV 路径（缺失时跳过，不报错）")
     ap.add_argument("--tag", default="", help="文件名后缀，默认 u<N>k 例 u5k")
     args = ap.parse_args()
 
@@ -104,6 +110,7 @@ def main():
     root = os.path.join(args.data_root, d, "sft")
     train_csv = args.train_csv or os.path.join(root, "train", f"{d}_5_train.csv")
     test_csv = args.test_csv or os.path.join(root, "test", f"{d}_5_test.csv")
+    valid_csv = args.valid_csv or os.path.join(root, "valid", f"{d}_5_valid.csv")
     tag = args.tag
     if not tag:
         tag = f"u{args.n_users // 1000}k" if args.n_users % 1000 == 0 else f"u{args.n_users}"
@@ -130,13 +137,23 @@ def main():
 
     out_train = os.path.join(root, "train", f"{d}_5_train.{tag}.csv")
     out_test = os.path.join(root, "test", f"{d}_5_test.{tag}.csv")
+    out_valid = os.path.join(root, "valid", f"{d}_5_valid.{tag}.csv")
     out_man = os.path.join(root, "info", f"{d}.user_subset.{tag}.json")
 
     tr_in, tr_out = write_filtered(train_csv, out_train, picked)
     te_in, te_out = write_filtered(test_csv, out_test, picked)
+    # valid 是**另一个 split**（每用户倒数第二条），不能拿 test 顶替；源缺失时跳过（不报错）
+    has_valid = os.path.isfile(valid_csv)
+    va_in = va_out = 0
+    if has_valid:
+        va_in, va_out = write_filtered(valid_csv, out_valid, picked)
     print(f"[4/4] 写出：")
     print(f"      {out_train}   ({tr_in:,} -> {tr_out:,} 行, {os.path.getsize(out_train) / 1e6:.1f} MB)")
     print(f"      {out_test}   ({te_in:,} -> {te_out:,} 行, {os.path.getsize(out_test) / 1e6:.1f} MB)")
+    if has_valid:
+        print(f"      {out_valid}   ({va_in:,} -> {va_out:,} 行, {os.path.getsize(out_valid) / 1e6:.1f} MB)")
+    else:
+        print(f"      [SKIP] valid 源不存在（{valid_csv}）—— RL 的 EVAL_FILE 请自行指定或忽略")
 
     # 按比例算 T3 上限，保住全量 run 的 T1:T3 配比（T3 原为硬编码绝对上限 10000）
     t3_full, t1_full = 10_000, 208_999
@@ -150,15 +167,19 @@ def main():
         "tag": tag,
         "source_train_csv": train_csv,
         "source_test_csv": test_csv,
+        "source_valid_csv": valid_csv if has_valid else None,
         "out_train_csv": out_train,
         "out_test_csv": out_test,
+        "out_valid_csv": out_valid if has_valid else None,
         "train_rows_in": tr_in, "train_rows_out": tr_out,
         "test_rows_in": te_in, "test_rows_out": te_out,
+        "valid_rows_in": va_in, "valid_rows_out": va_out,
         "rows_per_user_train": round(tr_out / args.n_users, 3),
         "recommend_RL_TASKS": "T1,T3",
         "recommend_RL_T3_SAMPLE": t3_cap,
         "recommend_env": {
             "TRAIN_FILE": out_train,
+            "EVAL_FILE": out_valid if has_valid else None,
             "TEST_FILE": out_test,
             "RL_TASKS": "T1,T3",
             "RL_T3_SAMPLE": t3_cap,
@@ -169,14 +190,21 @@ def main():
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"      {out_man}   (清单，含用户列表与建议参数)")
 
-    steps = (tr_out + t3_cap) // 32
+    # 步数 = ceil(总行数 / 8)：`RepeatRandomSampler` 使 dataloader 长度 = 行数，每优化步吃 8 行、生成 32 条序列
+    steps = -(-(tr_out + t3_cap) // 8)
     print()
     print("建议参数（训练用户 ≡ 评估用户）：")
     print(f"  TRAIN_FILE={out_train}")
+    if has_valid:
+        print(f"  EVAL_FILE={out_valid}   (RL 内部验证集 = 同批用户的「倒数第二条」)")
     print(f"  RL_TASKS=T1,T3   RL_T2_SAMPLE=-1   RL_T3_SAMPLE={t3_cap}")
     print(f"  训练集 = {tr_out:,}(T1) + {t3_cap:,}(T3) = {tr_out + t3_cap:,} 行"
-          f" ⟹ {steps:,} 步/epoch ≈ {steps * 4.9 / 60:.0f} min @4.9 s/step")
+          f" ⟹ {steps:,} 步/epoch ≈ {steps * 3.17 / 60:.0f} min @3.17 s/step")
     print(f"  TEST_FILE={out_test}   (评估 {te_out:,} 行 = {args.n_users:,} 个用户)")
+    if has_valid:
+        ev = -(-(va_out * 4) // 4)  # 评估侧同样被 RepeatRandomSampler ×4，再 ÷ EVAL_BATCH_SIZE 4
+        print(f"  ⚠️ 开训练内 eval 时（`EVAL_STEP` < 总步数）单次 ≈ {ev:,} batch ≈ {ev / 3.89 / 60:.0f} min；"
+              f"不想付就设 `EVAL_STEP=99999`")
     print()
     print(f"⚠️ 旧锚点作废：IandS-all 在全量 test 上的 HR@10=0.0356 与这套评估集**不可比**，")
     print(f"   必须先补锚点：TEST_FILE={out_test} MODEL_PATH=outputs/IandS-all/final_checkpoint \\")

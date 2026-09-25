@@ -595,15 +595,20 @@ fire 会把命令行 `T1,T3` 解析成 **tuple** ⟹ `str(('T1','T3'))` = `"('T1
 train ∩ test 用户 = 50,982 ；seed=42 抽 5,000 个
   train/IandS_5_train.u5k.csv   208,999 -> 20,418 行 (21.2 MB)
   test /IandS_5_test.u5k.csv     50,982 ->  5,000 行 ( 5.5 MB)
+  valid/IandS_5_valid.u5k.csv    50,984 ->  5,000 行 ( 4.8 MB)   ← RL 内部验证集（EVAL_FILE）
   建议 RL_T3_SAMPLE = 977（= round(20,418 × 10,000 / 208,999)，保住全量的 T1:T3 配比）
   训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ **2,675 步/epoch**（= ceil(21,395/8)）≈ **2.4 h** @3.17 s/step
 ```
 
-**完整性已判**：CRLF=**0**（全 LF）、列名与源一致、两文件 `user_id` 全部 ∈ S、
-**`train 用户集合 == S == test 用户集合`**（这才是目标）、`history_item_id` / `history_item_sid` 仍可 `eval()`、
+🔴 **三支都要切，且 `valid` ≠ `test`**：`valid` = 每用户的**倒数第二条**、`test` = **最后一条**，是 LOO 的
+两个不同 split。拿 `test` 顶 `valid` 当训练内验证集，等于**把最终报告集当监控集**用（虽然本仓不做基于它的
+模型选择、无选择偏差，但会把两个口径混一起）。脚本已一并切好（`valid` 源缺失时跳过并提示，不报错）。
+
+**完整性已判**：CRLF=**0**（全 LF）、列名与源一致、**三支** `user_id` 全部 ∈ S、
+**`train 用户集合 == S == test 用户集合 == valid 用户集合`**（这才是目标）、`history_item_id` / `history_item_sid` 仍可 `eval()`、
 SID 串全部匹配 `<a_x><b_y><c_z>`、无 NaN。
 
-**数据集类冒烟已判**（本机 CPU，GPU 跑 55 min 前先走一遍这条"从未执行过的组合"）：
+**数据集类冒烟已判**（本机 CPU，GPU 跑 2.4 h 前先走一遍这条"从未执行过的组合"）：
 `SidDataset(subset, sample=-1)` = **20,418**（= CSV 行数）、`RLSeqTitle2SidDataset(subset, sample=977)` = **977**
 （上限生效）、两者 prompt 均以 `<|im_start|>assistant\n` 结尾、completion 均为 `<a_x><b_y><c_z>\n`（与 rule 奖励的精确匹配口径一致）。
 ⟹ 合计 **21,395 行 / 2,675 步/epoch ≈ 2.4 h**。
@@ -638,12 +643,16 @@ python scripts/rl/make_user_subset.py --domain IandS --n-users 5000 --seed 42
 # ② 锚点：IandS-all 在**同一批用户**的 test 上  ← ✅ 已跑（HR@10=0.0342）；需重测时用这条
 TEST_FILE=data/Amazon23/IandS/sft/test/IandS_5_test.u5k.csv \
 MODEL_PATH=outputs/IandS-all/final_checkpoint MAX_SAMPLES=0 BATCH_SIZE=12 bash evaluate_run0.sh
-# ③ 快迭代训练（训练用户 ≡ 评估用户）
+# ③ 快迭代训练（训练用户 ≡ 评估用户；EVAL_FILE 也必须是同批用户，否则内部验证集仍是全量 50,984）
 TRAIN_FILE=data/Amazon23/IandS/sft/train/IandS_5_train.u5k.csv \
+EVAL_FILE=data/Amazon23/IandS/sft/valid/IandS_5_valid.u5k.csv \
 RL_TASKS=T1,T3 RL_T3_SAMPLE=977 \
 MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=u5k \
 NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bash rl_run0.sh
 ```
+
+⚠️ `EVAL_STEP=99999` 是必须的（**>`> 实际总步数`**）：只给 `EVAL_FILE` 而不关内部 eval 的话，
+`999` 会在 step 999 触发一次 **5,000 个 batch ≈ 21 min** 的评估（不是全量时那 2.5 h，但仍是纯浪费）。
 
 ⚠️ **两处诚实边界**：① "同用户"只覆盖 **T1/T3**（占全量 81%，也正是承载用户信号的两路），
 T2 无用户维度、被整体去掉；② 于是任务构成变成 `T1:T3`（无 T2）⟹ 与全量 run 的 `T1:T2:T3` 不同，
