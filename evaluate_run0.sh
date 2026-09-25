@@ -90,7 +90,9 @@ case "${DO_SAMPLE}" in
   *) echo "[ERROR] DO_SAMPLE 只接受 True / False，收到 '${DO_SAMPLE}'"; exit 1 ;;
 esac
 
-TEST_FILE="${SFT_DIR}/test/${DOMAIN}_5_test.csv"
+# 🔴 [本项目新增] 支持环境变量覆盖 —— 指向"同一批用户"的子集 test CSV，使**评估集与训练集同源**
+#    （scripts/rl/make_user_subset.py 生成；不传时行为与覆盖前完全一致）。
+TEST_FILE="${TEST_FILE:-${SFT_DIR}/test/${DOMAIN}_5_test.csv}"
 INFO_FILE="${SFT_DIR}/info/${DOMAIN}.item_info.txt"
 
 # ---------------- 落点（命名规范见文件头） ----------------

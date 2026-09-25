@@ -536,35 +536,65 @@ MODEL_PATH=outputs/IandS-all/final_checkpoint MAX_SAMPLES=5000 BATCH_SIZE=12 bas
 ⟹ 两者交集仅约 **7%**（而全量 run 覆盖 100% 用户）⟹ **若 RL 的增益有一部分来自"对见过用户的个性化"，
 fast run 会偏低（方向上偏保守）**。这是推理、非实测，只用于解读，不作判据。
 
-🔴 **设计岔路（未决，2026-09-25 用户提出）：要不要"训练与评估用同一批用户"？**
+### ✅ 已实现：「同一批用户」的小规模迭代（`T1+T3` 版，2026-09-25）
 
-全量 run 里训练用户 ⊇ 评估用户 = **100%**；而 `MAX_STEPS` 前缀方案只有 **约 7% 交集**
-（470 步覆盖 ≈3,700 个用户，评估抽 5,000 个用户 ⟹ 期望交集 ≈ `3,700 × 5,000 / 50,985` ≈ 360）。
-所以"同一批用户"确实是**更忠实的缩放版**。可行性已核（本机实测）：
+**为什么值得做**：全量 run 里训练用户 ⊇ 评估用户 = **100%**；而 `MAX_STEPS` 前缀方案只有
+**约 7% 交集**（470 步 ≈3,700 用户 vs 评估 5,000 用户）⟹ 它不是全量 run 的忠实缩放版。
 
-| 事实 | 值 |
+**做法**：按**同一批用户**切 train/test，并把按用户切不动的 `T2` 去掉。
+
+| 事实（本机实测） | 值 |
 |---|---|
 | `train` / `test` CSV 是否带 `user_id` | **都带** ✓ |
-| `test` 行/用户 | **1.00**（50,982 / 50,982）⟹ 取 \|S\| 个用户 = \|S\| 条评估行 |
-| `train` 行/用户 | **4.10**（208,999 / 50,985；p50=2、p95=13、max=200）⟹ S=5,000 用户 ≈ **20,496 行** |
+| `train` 行/用户 | **4.10**（208,999 / 50,985；p50=2、p95=13、max=200） |
+| `test` 行/用户 | **1.00**（50,982 / 50,982）⟹ 取 N 个用户 = N 条评估行 |
+| `train ∩ test` 用户 | **50,982**（每个 test 用户都有 train 行）⟹ 抽样池充足 |
 
-🔴 **但有一个硬障碍：`T2`（`RLTitle2SidDataset`）是 item-level、没有用户维度** —— 它读
-`item_info` / `sid_index`（商品目录），与用户历史无关 ⟹ **按用户缩只能缩 T1/T3**。
+🔴 **为什么必须去掉 T2**：`T2 = RLTitle2SidDataset` 读 `item_info` / `sid_index`（**商品目录**），
+**item-level、没有用户维度** ⟹ 按用户缩不动。若留着它（51,433 行，与用户无关），配比会被顶到
+T2 占 **63%**、单次迭代 **3.5 h**。而 `T1`（`SidDataset`）与 `T3`（`RLSeqTitle2SidDataset`）
+**都是从 train CSV 派生的** ⟹ 都能按用户切 ⟹ `RL_TASKS=T1,T3`。
 
-| 方案 | 训练用户 ≡ 评估用户 | 任务混比 | 单次迭代 | 一次性改动 |
-|---|---|---|---|---|
-| 现状：全量 CSV + `MAX_STEPS` | ❌ 约 7% | ✅ 77/19/4 不变 | **38 min** | 零 |
-| **(i)** S 同时切 T1/T3，并按比例 cap T2/T3 | ✅ 100% | ✅ 不变 | **68 min** | 数据脚本 + 3 处代码 + 重测锚点 |
-| (ii) S 切 T1/T3，T2 留全量 | ✅ 100% | ❌ T2 19% → **63%** | 3.5 h | 数据脚本 + 2 处路径开关 + 重测锚点 |
+**新增的三件工具**（默认路径全部**逐位不变**）：
 
-（(i) 的 cap = `T2 = round(T1 × 51433/208999)` = 5,044、`T3 = round(T1 × 10000/208999)` = 981
-⟹ 26,521 行 / 828 步 ≈ 68 min。）
+| 文件 / 开关 | 作用 |
+|---|---|
+| `scripts/rl/make_user_subset.py` | 抽 N 个用户（种子固定）⟹ 产出 `train/*.<tag>.csv`、`test/*.<tag>.csv`、`info/*.user_subset.<tag>.json`（清单含 seed / 用户列表 / 行数 / 建议参数）。**流式 `csv` 读写、不整表进内存**（train CSV 222 MB），并保留字段原始文本（下游有 `eval(row['history_item_id'])`） |
+| `RL_TASKS` / `RL_T2_SAMPLE` / `RL_T3_SAMPLE` | 任务子集 + 行数上限。`RL_TASKS` 带 **shell 级真值陷阱防护**（放错位置会被前置检查抢掉——已修正到配置区最前）。`rl.py` 侧同名参数，非法值直接 `raise` |
+| `TRAIN_FILE` / `EVAL_FILE` / `SID_INDEX` / `ITEM_META` / `INFO_FILE` / `TEST_FILE` | **五条 RL 路径 + 评估的 `TEST_FILE` 改为 `${VAR:-default}`**（原来都是写死的普通赋值）⟹ 可指向子集 CSV |
 
-⚠️ **两条路径都是写死的普通赋值、不支持覆盖**，所以 (i)/(ii) 都要先改成 `${VAR:-default}`：
-`rl_run0.sh:119` 的 `TRAIN_FILE=`、`evaluate_run0.sh:93` 的 `TEST_FILE=`。
+`[实测]` 本机实跑 `--n-users 5000 --seed 42`：
 
-⚠️ 即便选 (i)，"同用户"严格来说只覆盖 **T1/T3**（占全量 81%，也正是在承载用户信号的两路）；
-T2 无用户维度，只能按行数比例缩。**决策待定，尚未实现。**
+```
+train ∩ test 用户 = 50,982 ；seed=42 抽 5,000 个
+  train/IandS_5_train.u5k.csv   208,999 -> 20,418 行 (21.2 MB)
+  test /IandS_5_test.u5k.csv     50,982 ->  5,000 行 ( 5.5 MB)
+  建议 RL_T3_SAMPLE = 977（= round(20,418 × 10,000 / 208,999)，保住全量的 T1:T3 配比）
+  训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ 668 步/epoch ≈ 55 min @4.9 s/step
+```
+
+**完整性已判**：CRLF=**0**（全 LF）、列名与源一致、两文件 `user_id` 全部 ∈ S、
+**`train 用户集合 == S == test 用户集合`**（这才是目标）、`history_item_id` / `history_item_sid` 仍可 `eval()`、
+SID 串全部匹配 `<a_x><b_y><c_z>`、无 NaN。
+
+**跑法**（①②一次性，③可反复）：
+
+```bash
+# ① 生成子集（云端跑；本机已生成同一份 —— seed 相同 ⟹ 内容一致）
+python scripts/rl/make_user_subset.py --domain IandS --n-users 5000 --seed 42
+# ② 补锚点：IandS-all 在**同一批用户**的 test 上  ← 必做，旧锚点 0.0356 作废
+TEST_FILE=data/Amazon23/IandS/sft/test/IandS_5_test.u5k.csv \
+MODEL_PATH=outputs/IandS-all/final_checkpoint MAX_SAMPLES=0 BATCH_SIZE=12 bash evaluate_run0.sh
+# ③ 快迭代训练（训练用户 ≡ 评估用户）
+TRAIN_FILE=data/Amazon23/IandS/sft/train/IandS_5_train.u5k.csv \
+RL_TASKS=T1,T3 RL_T3_SAMPLE=977 \
+MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=u5k \
+NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=999 SAVE_STEPS=999 bash rl_run0.sh
+```
+
+⚠️ **两处诚实边界**：① "同用户"只覆盖 **T1/T3**（占全量 81%，也正是承载用户信号的两路），
+T2 无用户维度、被整体去掉；② 于是任务构成变成 `T1:T3`（无 T2）⟹ 与全量 run 的 `T1:T2:T3` 不同，
+外推结论需假设 **T2 不是关键变量**（它只做"哪个商品有这个标题"，不含用户信号）。
 
 🔴 **短跑的两个陷阱**：① 只有约 24% 的步给梯度 ⟹ 470 步里真正更新参数的只有约 110 步，
 **别用 reward 的绝对值判断"学没学到"**；② 命中率在各个 prompt 间不均（探针复现的那段开头 160 个 prompt

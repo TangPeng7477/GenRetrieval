@@ -72,6 +72,31 @@ NUM_GENERATIONS="${NUM_GENERATIONS:-4}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-16}" # 3 SID + \n + EOS 只需 5，留头寸
 REWARD_TYPE="${REWARD_TYPE:-rule}"                   # UPGRADE_PLAN §6 的 R0 锚点 = rule
+
+# [本项目新增] RL 数据集构成 —— 用于"训练与评估同一批用户"的小规模迭代
+#   RL_TASKS：T1,T2,T3 的子集。默认三者全开 = 原版行为。
+#     T1 = SidDataset(seq2sid) / T2 = RLTitle2SidDataset(title2sid+desc2sid, **item-level**)
+#     T3 = RLSeqTitle2SidDataset(seqtitle2sid)。🔴 与 SFT 的 --tasks **不是一套**。
+#     做"同一批用户"时用 `RL_TASKS=T1,T3` —— 因为 T2 是 item-level、按用户切不了。
+#   RL_T2_SAMPLE / RL_T3_SAMPLE：给 T2/T3 单独设行数上限（<=0 = 不限；T3 默认沿用原硬编码 10000）。
+#     不 cap 的话 T1 被按用户缩掉而 T2 不缩 ⟹ 配比走样（T2 占比 19%→63%、单次 38min→3.5h）。
+RL_TASKS="${RL_TASKS:-T1,T2,T3}"
+RL_T2_SAMPLE="${RL_T2_SAMPLE:--1}"
+RL_T3_SAMPLE="${RL_T3_SAMPLE:-10000}"
+
+# RL_TASKS 真值陷阱防护（同 DO_SAMPLE / COLLECT / EVAL_BY_EPOCH 的做法）：
+# 打错任务名时**在任何加载之前**就失败，不浪费一次模型加载。
+# ⚠️ 必须放在这里（而不是后面的"前置检查"区）—— 否则 MODEL_PATH 缺失时会被前置检查先拦下，
+#    防护根本跑不到（[实测] 我第一版就放晚了，测 typo 时打出来的是"上游产物不齐"）。
+_bad_tasks=""
+for _t in ${RL_TASKS//,/ }; do
+  case "${_t}" in T1|T2|T3) ;; *) _bad_tasks="${_bad_tasks} ${_t}" ;; esac
+done
+if [ -n "${_bad_tasks}" ]; then
+  echo "[ERROR] RL_TASKS 含未知任务：${_bad_tasks}  （只接受 T1/T2/T3 的逗号子集，收到 '${RL_TASKS}'）"
+  exit 1
+fi
+
 BEAM_SEARCH="${BEAM_SEARCH:-True}"
 TEST_DURING_TRAINING="${TEST_DURING_TRAINING:-True}" # 训练内 beam 评测（HR/NDCG 就靠它）
 TEST_BEAM="${TEST_BEAM:-10}"
@@ -116,11 +141,14 @@ ADD_GT="${ADD_GT:-False}"
 RESUME="${RESUME:-}"
 
 # ---------------- 上游产物路径 ----------------
-TRAIN_FILE="${RL_DIR}/train/${DOMAIN}_5_train.csv"
-EVAL_FILE="${RL_DIR}/valid/${DOMAIN}_5_valid.csv"
-SID_INDEX="${RL_DIR}/index/${DOMAIN}.index.json"
-ITEM_META="${RL_DIR}/index/${DOMAIN}.item.json"
-INFO_FILE="${RL_DIR}/info/${DOMAIN}.item_info.txt"
+# 🔴 [本项目新增] 五条路径全部支持环境变量覆盖（原来都是写死的普通赋值）。
+#    用途：指向"同一批用户"的子集 CSV（scripts/rl/make_user_subset.py 生成）⟹ 训练用户 ≡ 评估用户。
+#    不传时与覆盖前**完全一致**。（`${X:-${Y}/z}` 嵌套默认在 bash 里合法。）
+TRAIN_FILE="${TRAIN_FILE:-${RL_DIR}/train/${DOMAIN}_5_train.csv}"
+EVAL_FILE="${EVAL_FILE:-${RL_DIR}/valid/${DOMAIN}_5_valid.csv}"
+SID_INDEX="${SID_INDEX:-${RL_DIR}/index/${DOMAIN}.index.json}"
+ITEM_META="${ITEM_META:-${RL_DIR}/index/${DOMAIN}.item.json}"
+INFO_FILE="${INFO_FILE:-${RL_DIR}/info/${DOMAIN}.item_info.txt}"
 
 # ---------------- 解释器：优先仓库自带 venv（Windows 本地），否则 PATH 里的 python（云端）----------------
 PY="python"
@@ -176,6 +204,9 @@ echo " SFT source  : ${SFT_EXP_ID}  ->  ${MODEL_PATH}"
 echo " Output dir  : ${OUTPUT_DIR}"
 echo " RL data dir : ${RL_DIR}   (复用 SFT 产物，无新增数据集)"
 echo " reward_type : ${REWARD_TYPE}"
+echo " rl_tasks    : ${RL_TASKS}   (T2 cap=${RL_T2_SAMPLE}, T3 cap=${RL_T3_SAMPLE})"
+echo " train_file  : ${TRAIN_FILE}"
+echo " eval_file   : ${EVAL_FILE}"
 echo " Batch       : ${TRAIN_BATCH_SIZE} prompt x ${NUM_GENERATIONS} gen"
 echo "               x grad_acc ${GRAD_ACC_STEPS} = effective $((TRAIN_BATCH_SIZE * GRAD_ACC_STEPS)) prompt / step"
 echo " Epochs / LR : ${NUM_TRAIN_EPOCHS} / ${LEARNING_RATE}   beta=${BETA}"
@@ -197,6 +228,10 @@ echo "=========================================="
   --set "sft_exp_id=${SFT_EXP_ID}" \
   --set "model_path=${MODEL_PATH}" \
   --set "reward_type=${REWARD_TYPE}" \
+  --set "rl_tasks=${RL_TASKS}" \
+  --set "rl_t2_sample=${RL_T2_SAMPLE}" \
+  --set "rl_t3_sample=${RL_T3_SAMPLE}" \
+  --set "train_file=${TRAIN_FILE}" \
   --set "num_generations=${NUM_GENERATIONS}" \
   --set "train_batch_size=${TRAIN_BATCH_SIZE}" \
   --set "grad_accum=${GRAD_ACC_STEPS}" \
@@ -225,6 +260,9 @@ echo "=========================================="
   --temperature "${TEMPERATURE}" \
   --max_completion_length "${MAX_COMPLETION_LENGTH}" \
   --reward_type "${REWARD_TYPE}" \
+  --rl_tasks "${RL_TASKS}" \
+  --rl_t2_sample "${RL_T2_SAMPLE}" \
+  --rl_t3_sample "${RL_T3_SAMPLE}" \
   --train_file "${TRAIN_FILE}" \
   --eval_file "${EVAL_FILE}" \
   --info_file "${INFO_FILE}" \

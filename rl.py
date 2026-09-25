@@ -69,6 +69,22 @@ def train(
     max_completion_length: int = 16,
     reward_type: str = "rule",
     sample_train: bool = False,
+
+    # ---- [本项目新增] RL 数据集构成：任务子集 / 按规模缩放 ----
+    # 用途：做"训练与评估同一批用户"的小规模迭代时，把**无法按用户切分**的 T2 去掉（只留 T1,T3）。
+    #   `T1` = SidDataset            （历史 SID → 目标 SID）
+    #   `T2` = RLTitle2SidDataset    （title → SID ＋ description → SID；**item-level，无用户维度**）
+    #   `T3` = RLSeqTitle2SidDataset （历史**标题** → 目标 SID）
+    # 🔴 与 SFT 的 `--tasks` **不是一套**：RL 无 T2a/T2b 之分，且三路 target **全是 SID**（`rule` 奖励要求）。
+    # 默认 "T1,T2,T3" + 下面两个上限，保证与原版行为**逐位相同**。
+    rl_tasks: str = "T1,T2,T3",
+    # rl_t2_sample / rl_t3_sample：给 T2 / T3 单独设行数上限（<=0 视为不限）。
+    # 为什么需要：T1 会被"按用户过滤后的 train CSV"缩掉，而 **T2 是 item-level 缩不掉**、
+    # T3 原本的 10000 又是**硬编码绝对值** ⟹ 不设上限则任务配比严重走样。
+    # [实测] 5,000 用户：T1 20,496 行；若不 cap，T2 51,433 + T3 10,000 会让 T2 占比
+    # 从全量的 19% 跳到 63%、单次迭代 38 min → 3.5 h。→ RL_PIPELINE §6.9 阶段 0
+    rl_t2_sample: int = -1,
+    rl_t3_sample: int = 10000,
     ada_path: str = "",
     cf_path: str = "",
     sid_index_path: str = "",
@@ -185,15 +201,32 @@ def train(
         item2id = {name: i for i, name in enumerate(item_name)}
 
     sample = -1
+
+    # ---- [本项目新增] 任务子集（默认 T1,T2,T3 = 原版行为）----
+    _rl_tasks = [t.strip() for t in str(rl_tasks).split(",") if t.strip()]
+    _valid = ("T1", "T2", "T3")
+    if not _rl_tasks:
+        raise ValueError("rl_tasks 不能为空（默认 'T1,T2,T3'）")
+    _bad = [t for t in _rl_tasks if t not in _valid]
+    if _bad:
+        raise ValueError(f"rl_tasks 只接受 {_valid} 的子集，收到 {_bad!r}（完整值={rl_tasks!r}）")
+    _t2_sample = rl_t2_sample if rl_t2_sample and rl_t2_sample > 0 else -1
+    _t3_sample = rl_t3_sample if rl_t3_sample and rl_t3_sample > 0 else -1
+    print(f"[RL_TASKS] 启用 {','.join(_rl_tasks)}"
+          f"   (T1=SidDataset seq2sid / T2=RLTitle2SidDataset title2sid+desc2sid(item-level)"
+          f" / T3=RLSeqTitle2SidDataset seqtitle2sid)")
+    print(f"[RL_TASKS] 行数上限：T2={_t2_sample}  T3={_t3_sample}  (<=0 = 不限)")
+
     train_datasets = []
     # train_data = D3Dataset(train_file, category=category_dict[category], sample=sample)
     # train_datasets.append(train_data)
-    train_data1 = SidDataset(train_file, category=category_dict[category], sample=sample)
-    train_datasets.append(train_data1)
-    train_data2 = RLTitle2SidDataset(item_file=item_meta_path, index_file=sid_index_path, category=category_dict[category], sample=sample)
-    train_datasets.append(train_data2)
-    train_data3 = RLSeqTitle2SidDataset(train_file, category=category_dict[category], sample=10000)
-    train_datasets.append(train_data3)
+    if "T1" in _rl_tasks:
+        train_datasets.append(SidDataset(train_file, category=category_dict[category], sample=sample))
+    if "T2" in _rl_tasks:
+        train_datasets.append(RLTitle2SidDataset(item_file=item_meta_path, index_file=sid_index_path,
+                                                category=category_dict[category], sample=_t2_sample))
+    if "T3" in _rl_tasks:
+        train_datasets.append(RLSeqTitle2SidDataset(train_file, category=category_dict[category], sample=_t3_sample))
     # train_data4 = RLSid2TitleDataset(item_file=item_meta_path, index_file=sid_index_path, category=category_dict[category], sample=sample)
     # train_datasets.append(train_data4)
     # train_data5 = RLSidhis2TitleDataset(train_file, item_file=item_meta_path, index_file=sid_index_path, category=category_dict[category], sample=sample)
@@ -202,8 +235,12 @@ def train(
     # train_datasets.append(train_data6)
     # train_data7 = RLTitle2Sid_2LayerDataset(item_file=item_meta_path, index_file=sid_index_path, category=category_dict[category], sample=sample)
     # train_datasets.append(train_data7)
+    for _i, _d in enumerate(train_datasets, 1):
+        print(f"  {_i}. {type(_d).__name__:<24s} {len(_d):>9,} 条")
     train_data = ConcatDataset(train_datasets)
+    print(f"  [RL_TASKS] 训练集合计 {len(train_data):,} 条")
     # eval_data = D3Dataset(eval_file, category=category_dict[category], sample=sample)
+    # ⚠️ 验证集恒为 SidDataset（= T1 格式），与 rl_tasks 无关 —— 与 sft.py:471 同款设计。
     eval_data = SidDataset(eval_file, category=category_dict[category], sample=sample)
 
     train_dataset = Dataset.from_dict({k : [elm[k] for elm in train_data] for k in train_data[0].keys()})
