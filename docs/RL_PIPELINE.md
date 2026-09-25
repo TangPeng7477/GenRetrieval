@@ -320,7 +320,7 @@ TRAIN_BATCH_SIZE=4 NUM_GENERATIONS=4 \
 USE_LORA=True GRAD_CKPT=True \
 LORA_MODULES_TO_SAVE="" \
 MAX_STEPS=2 TEST_DURING_TRAINING=False BEAM_SEARCH=False \
-SAVE_STEPS=999 EVAL_STEP=999 \
+SAVE_STEPS=999 EVAL_STEP=99999 \
 bash rl_run0.sh
 ```
 
@@ -407,8 +407,10 @@ if self.beam_search:
 | `BEAM_SEARCH=True`（默认） | **BEAM_SAMPLE**（随机） | **0.52%** `[实测]` | **2.1%** `[实测]` |
 | `BEAM_SEARCH=False` | SAMPLE（纯采样） | ≈ `HR@1` = 0.67% | ≈ 2.7% |
 
-实测口径：`IandS-rlfix` 30 步 × 128 条候选 = **3,840 条命中 20 条**（0.52%/条）；
-30 步 × 32 组 = **960 组命中 20 组**（2.1%/组）；**有信号的优化步 = 5/30 ≈ 17%**。
+实测口径（分母 2026-09-25 已核定 = **32 条/步、8 组/步**，见 §6.10 ⑻）：
+`IandS-rlfix` 30 步 × 32 条 = **960 条命中 5 条**（0.52%/条）；
+30 步 × 8 组 = **240 组命中 5 组**（2.1%/组）；**有信号的优化步 = 5/30 ≈ 17%**。
+（原写的 128 条 / 32 组 / 20 条命中是同一批数据的**错误分母**版本 —— 比率不变、计数 ×4。）
 ⟹ 与 `HR@1`/`HR@4` 的预测同量级 ✓（**奖励稀疏是真的，但比"97~98% 全 0"稍好**）。
 
 ✅ **命中率有实测了，且与"窗口分母"无关**（`E[reward]` 直接给出，推导见 §6.10 ⑻）：
@@ -452,19 +454,35 @@ REWARD_TYPE=ranking ... bash rl_run0.sh     # 与 rule 同一 RUN_TAG 体系外�
 "确定性 beam 会让目标不在 top-4 时永远没有探索机会" **不成立**（那是我按 `BEAM_SEARCH` 的字面意思推的，错）。
 真实增益仍然要靠堆量：`MAX_STEPS`、`NUM_GENERATIONS`↑、或调 `TEMPERATURE`（现为 1.0，分布很散）。
 
-**③ 成本（务必先限步，别直接全量）** `[实测，2026-09-25]`：
+**③ 成本（务必先限步，别直接全量）** `[实测，2026-09-25]`
+
+🔴 **步数公式（2026-09-25 用日志进度条 `total=2675` 反推校正 —— 我原写 `len/32`，少了 4×）**：
+`_get_train_sampler` 返回 `RepeatRandomSampler(dataset, num_generations=4)` ⟹ **dataloader 长度 = 数据集行数**
+（每行被重复 4 次、batch 又恰好 4，两者相消），故
+
+```
+steps/epoch = ceil(len × NUM_GENERATIONS / (TRAIN_BATCH_SIZE × GRAD_ACC_STEPS)) = ceil(len / 8)
+```
+
+⟹ **每个优化步消耗 8 个 prompt（行）、生成 32 条序列**（**不是 32 行**）。
+校验：`ceil(21,395 / 8) = 2,675`，与日志进度条 `999/2675` **逐位一致**。
 
 ```
 训练数据 = 270,432（208,999 SidDataset + 51,433 RLTitle2Sid + 10,000 RLSeqTitle2Sid）
-步数/epoch = 270,432 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC_STEPS 8 = 32) = 8,451
-步速       = 4.9 s/step（4090D，全参 GRPO + grad_ckpt，两次 run 互校）
-⟹ 1 epoch ≈ 11.5 h，2 epoch ≈ 23.6 h
+步数/epoch = ceil(270,432 / 8) = 33,804          （原写 8,451 = len/32，少 4×）
+步速 = 3.17 s/step（4090D，全参 GRPO + grad_ckpt + TEST_DURING_TRAINING=False；
+       带训练内 test 路径时 4.9 s/step）⟹ ≈99 ms/条序列
+⟹ 1 epoch ≈ 30 h，2 epoch ≈ 60 h
 ```
 
 🔴 **`TEST_DURING_TRAINING` 的内部 eval 是最大隐藏开销**：`EVAL_STEP=0.0999` ⟹ 约 10 次全量验证集
 （50,984 条）beam=10 评估。`[实测]` **单次 ≈ 6.0 h**（进度条 `683/50984 [04:40<5:56:55]`，
 `EVAL_BATCH_SIZE=4` + `max_new_tokens=16` + 每步 LogitProcessor，比 `evaluate.py` 贵得多）
-—— 我原先估的 30 min **差了 12 倍**。⟹ **短跑/长跑都建议 `TEST_DURING_TRAINING=False` + `EVAL_STEP=999`**。
+—— 我原先估的 30 min **差了 12 倍**。⟹ **短跑/长跑都建议 `TEST_DURING_TRAINING=False` + `EVAL_STEP=99999`**。
+
+🔴 **别用 `999`**：它是我按"总步数只有 669"挑的，而真实总步数是 **2,675** ⟹ **`999` 是它的倍数，真触发了**。
+`[实测]` 2026-09-25 `IandS-u5k`：训练条停在 `999/2675` 时，评估条开始跑 **50,984 个 batch**（= 203,936 条序列，
+≈2.5 h）。规则：**`EVAL_STEP` 必须 > 实际总步数**；`99999` 最省心。
 
 ### 6.9 推荐跑法：四阶段（先小规模迭代，再通链路，最后要数字）
 
@@ -474,20 +492,20 @@ REWARD_TYPE=ranking ... bash rl_run0.sh     # 与 rule 同一 RUN_TAG 体系外�
 
 🔑 **不需要改代码 —— `MAX_STEPS` 本身就是"子集"**：`rl.py:210` 的 `shuffle(seed=seed)`
 （`seed=42`，`set_seed(42)`）是**固定排列**，且 `--seed` 也透传给了 HF（决定 `RandomSampler` 的每轮顺序）
-⟹ `MAX_STEPS=N` 恰好等于"只用这个固定排列的前 `N × 32` 个 prompt"，LR 的 cosine 也在这 N 步内退火完。
-**统计上等价于"从全量里随机抽 32N 条、跑 1 个 epoch"**（固定种子，可跨 run 复现）。
+⟹ `MAX_STEPS=N` 恰好等于"只用这个固定排列的前 `N × 8` 行"，LR 的 cosine 也在这 N 步内退火完。
+**统计上等价于"从全量里随机抽 8N 行、跑 1 个 epoch"**（固定种子，可跨 run 复现）。
 
 ```bash
 MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=rlfast \
-MAX_STEPS=470 NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=999 SAVE_STEPS=999 \
+MAX_STEPS=625 NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 \
 bash rl_run0.sh
 ```
 
-| 相当于多少条 | `MAX_STEPS` | 训练时长（4.9 s/步） | 其中有梯度的步（24%） |
+| 相当于多少行 | `MAX_STEPS` | 训练时长（3.17 s/步） | 其中有梯度的步（24%） |
 |---:|---:|---|---:|
-| 5,000 | 157 | ~13 min | ~38 |
-| 15,000 | 470 | ~38 min | ~113 |
-| 30,000 | 940 | ~1.3 h | ~226 |
+| 5,000 | 625 | ~33 min | ~150 |
+| 15,000 | 1,875 | ~1.7 h | ~450 |
+| 30,000 | 3,750 | ~3.3 h | ~900 |
 
 ⚠️ **`sample` 是硬编码的，没有 CLI 开关**：`rl.py:187` 的 `sample = -1`（全量）、
 `:195` 的 `sample=10000`（T3 上限）。`sample_train`（`:211`）**不是子采样** —— 它只在
@@ -539,7 +557,7 @@ bash rl_run0.sh
 ### ✅ 已实现：「同一批用户」的小规模迭代（`T1+T3` 版，2026-09-25）
 
 **为什么值得做**：全量 run 里训练用户 ⊇ 评估用户 = **100%**；而 `MAX_STEPS` 前缀方案只有
-**约 7% 交集**（470 步 ≈3,700 用户 vs 评估 5,000 用户）⟹ 它不是全量 run 的忠实缩放版。
+**约 7% 交集**（1,875 步 ≈ 15,000 行 ≈ 3,700 用户 vs 评估 5,000 用户）⟹ 它不是全量 run 的忠实缩放版。
 
 **做法**：按**同一批用户**切 train/test，并把按用户切不动的 `T2` 去掉。
 
@@ -578,7 +596,7 @@ train ∩ test 用户 = 50,982 ；seed=42 抽 5,000 个
   train/IandS_5_train.u5k.csv   208,999 -> 20,418 行 (21.2 MB)
   test /IandS_5_test.u5k.csv     50,982 ->  5,000 行 ( 5.5 MB)
   建议 RL_T3_SAMPLE = 977（= round(20,418 × 10,000 / 208,999)，保住全量的 T1:T3 配比）
-  训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ 669 步/epoch ≈ 55 min @4.9 s/step
+  训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ **2,675 步/epoch**（= ceil(21,395/8)）≈ **2.4 h** @3.17 s/step
 ```
 
 **完整性已判**：CRLF=**0**（全 LF）、列名与源一致、两文件 `user_id` 全部 ∈ S、
@@ -588,7 +606,7 @@ SID 串全部匹配 `<a_x><b_y><c_z>`、无 NaN。
 **数据集类冒烟已判**（本机 CPU，GPU 跑 55 min 前先走一遍这条"从未执行过的组合"）：
 `SidDataset(subset, sample=-1)` = **20,418**（= CSV 行数）、`RLSeqTitle2SidDataset(subset, sample=977)` = **977**
 （上限生效）、两者 prompt 均以 `<|im_start|>assistant\n` 结尾、completion 均为 `<a_x><b_y><c_z>\n`（与 rule 奖励的精确匹配口径一致）。
-⟹ 合计 **21,395 行 / 669 步/epoch**。
+⟹ 合计 **21,395 行 / 2,675 步/epoch ≈ 2.4 h**。
 
 **✅ 锚点已测（2026-09-25，`EXP_ID=IandS-all`，同一批 5,000 用户的 test，beam=50）**
 
@@ -624,7 +642,7 @@ MODEL_PATH=outputs/IandS-all/final_checkpoint MAX_SAMPLES=0 BATCH_SIZE=12 bash e
 TRAIN_FILE=data/Amazon23/IandS/sft/train/IandS_5_train.u5k.csv \
 RL_TASKS=T1,T3 RL_T3_SAMPLE=977 \
 MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=u5k \
-NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=999 SAVE_STEPS=999 bash rl_run0.sh
+NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bash rl_run0.sh
 ```
 
 ⚠️ **两处诚实边界**：① "同用户"只覆盖 **T1/T3**（占全量 81%，也正是承载用户信号的两路），
@@ -642,7 +660,7 @@ cd ~/GenRetrieval && git pull && source .venv/bin/activate
 
 MODEL_PATH=outputs/IandS-all/final_checkpoint \
 RUN_TAG=rlsmoke MAX_STEPS=5 \
-TEST_DURING_TRAINING=False SAVE_STEPS=999 EVAL_STEP=999 \
+TEST_DURING_TRAINING=False SAVE_STEPS=999 EVAL_STEP=99999 \
 bash rl_run0.sh
 #  -> outputs/IandS-rlsmoke/
 ```
@@ -664,13 +682,13 @@ bash rl_run0.sh
 ```bash
 MODEL_PATH=outputs/IandS-all/final_checkpoint \
 RUN_TAG=rl0 MAX_STEPS=300 \
-TEST_DURING_TRAINING=False EVAL_STEP=999 SAVE_STEPS=999 \
+TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 \
 bash rl_run0.sh
 #  -> outputs/IandS-rl0/
 ```
 
 - `MAX_STEPS=300` 把训练钉在 ~25 min（`[实测]` 4.9 s/step × 300 ≈ 25 min）。
-- 🔴 **必须 `EVAL_STEP=999`** —— 若留着 `EVAL_STEP=0.5`，HF 层 `evaluate()` 会在 step 150/300 各跑一次
+- 🔴 **必须 `EVAL_STEP=99999`**（**> 实际总步数**；`999` 不够 —— 真实总步数 2,675 是它的倍数，见 §6.8③）—— 若留着 `EVAL_STEP=0.5`，HF 层 `evaluate()` 会在 step 150/300 各跑一次
   **全量验证集（50,984 条）beam=10**，单次 ≈ **6 h** ⟹ 这个"短跑"会变成 ~12 h（§6.10 ⑺）。
   我早先在这里写过 `EVAL_STEP=0.5`，是**没验证过内部 eval 成本**就下的配方，已改。
 - 🔴 **别指望 `TEST_DURING_TRAINING` 给 HR 轨迹**（我原先这么写，错了）：它**每步都跑**、样本只有
@@ -718,18 +736,18 @@ MODEL_PATH=outputs/IandS-rl0/final_checkpoint BATCH_SIZE=12 bash evaluate_run0.s
 
 ```
 train_runtime = 25.08 s / 5 步 = 5.02 s/步（train_steps_per_second = 0.199）
-步数 = 270,432 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC 8) = 8,451 步/epoch × 2 = 16,902 步
-⟹ 全量 2 epoch ≈ 23.6 h，另加训练内 eval
+步数 = ceil(270,432 / 8) = 33,804 步/epoch × 2 = 67,608 步   （原写 8,451/16,902 = len/32，少 4×）
+⟹ 全量 2 epoch ≈ 60 h，另加训练内 eval
 ```
 
 ⚠️ 我早先按 3050Ti 实测外推出的"4090D 约 9~14 h"**偏快一倍**，已由 §6.8③ 的实测取代 ——
-根因是全参 GRPO 的 ref 前向 + beam 生成都按 128 条序列/步算，比 SFT 的 teacher-forcing 贵得多。
+根因是全参 GRPO 的 ref 前向 + beam 生成都按 **32 条序列/步**算，比 SFT 的 teacher-forcing 贵得多。
 
 🔴 **缩短时长：抬 `TRAIN_BATCH_SIZE` 没用**（我初版这么写过，错的）。总成本 ∝ **总生成条数**：
 
 ```
 总条数 = epoch × 样本数 × NUM_GENERATIONS = 2 × 270,432 × 4 ≈ 2.16 M 条
-5 s / 128 条 ⟹ 39 ms/条 ⟹ 2.16 M × 0.039 ≈ 84,000 s ≈ 23.3 h   ✓ 与上面吻合
+3.17 s / 32 条 ⟹ 99 ms/条 ⟹ 2.16 M × 0.099 ≈ 214,000 s ≈ 59.4 h   ✓ 与上面吻合
 ```
 
 抬 batch 只是把同一批工作换个切法（步数少了，但每步按比例更重）⟹ **壁钟时间不变**。
@@ -737,7 +755,7 @@ train_runtime = 25.08 s / 5 步 = 5.02 s/步（train_steps_per_second = 0.199）
 
 | 杠杆 | 效果 | 代价 |
 |---|---|---|
-| **`NUM_TRAIN_EPOCHS=1`** | 23.6 h → **≈11.8 h** | 少一轮 |
+| **`NUM_TRAIN_EPOCHS=1`** | 60 h → **≈30 h** | 少一轮 |
 | 减样本（`rl.py` 里 `sample` 硬编码 `-1`，**要改代码**） | 线性 | 改代码 |
 | `MAX_STEPS=N` 截断 | 线性 | 只跑一部分数据 |
 
@@ -933,7 +951,7 @@ topk_indices = torch.multinomial(softmax(accumulated_log_probs),
 ### ✅ 云端验证（2026-09-25，`IandS-rlfix`）
 
 配置刻意让**两条生成路径同时被走到**：`MAX_STEPS=30` + `TEST_DURING_TRAINING=True`
-（告警只在这条路径产生）+ `EVAL_STEP=999`（避开 ⑺ 那次 6 h 的内部 eval）+ `SAVE_STEPS=999`。
+（告警只在这条路径产生）+ `EVAL_STEP=99999`（避开 ⑺ 那次 6 h 的内部 eval）+ `SAVE_STEPS=999`。
 
 | 判据 | 结果 |
 |---|---|
@@ -967,7 +985,7 @@ if num_steps < 1:  num_steps = math.ceil(max_steps * num_steps)   # <1 = 比例
 | **`999`（> MAX_STEPS）** | 绝对步数 999 > 300 ⟹ **永不触发** | 0 | 0 |
 | `1.0` | ⚠️ 绝对 1 步 ⟹ **每步都 eval**（灾难） | 300 | — |
 
-🔴 **要快速拿 checkpoint：`EVAL_STEP=999`（关内部 eval）+ `TEST_DURING_TRAINING=False`**，
+🔴 **要快速拿 checkpoint：`EVAL_STEP=99999`（关内部 eval）+ `TEST_DURING_TRAINING=False`**，
 300 步 ≈ **23 min**；HR 随后用 `evaluate_run0.sh` 拿（beam=50、`MAX_SAMPLES=5000` ≈ 15 min），
 比内部 eval 又便宜一个量级且**口径与 `IandS-all` 可比**。
 
@@ -975,14 +993,17 @@ if num_steps < 1:  num_steps = math.ceil(max_steps * num_steps)   # <1 = 比例
 
 `rule_reward` 是**二值 0/1**（`rl.py:305-316`，精确字符串匹配）。`log()` 每次平均后 `clear()`
 （`minionerec_trainer.py:1138`），而 `_metrics["reward"]` 每 micro-batch append 一次（`:1037`）。
-⚠️ **分母（一个日志窗口含多少条候选）见本节末 —— 它尚未核定，所以下表的"反解"只在给定分母时成立：**
+✅ **分母已核定（2026-09-25 晚）：1 个日志窗口 = 1 个优化步 = 8 组 / 32 条候选。**
+证据：训练进度条 `total=2675 = ceil(21,395 / 8)` ⟹ **每优化步只吃 8 行**（`RepeatRandomSampler`
+把每行重复 4 次、batch 又恰好 4，两者相消；**不是 32 行**），再 × `NUM_GENERATIONS 4` = **32 条候选**。
 
-| 日志值 | 若分母 = 128（`4 prompt × 4 gen × grad_accum 8`） | 若分母 = 32 |
-|---|---|---|
-| `reward = 0.03125` = 1/32 | 命中 4 条 | 命中 1 条 |
-| `reward_std = 0.0625`（`std_grouped_rewards.mean()`，无偏；二值组 `[1,0,0,0]` 的 std = 0.5） | Σ 组内 std/32 组 = 2.0 ⟹ 4 个组各中 1 条 | Σ 组内 std/8 组 = 0.5 ⟹ 1 个组中 1 条 |
+| 日志值 | 反解（分母 = 32 条 / 8 组） |
+|---|---|
+| `reward = 0.03125` = 1/32 | 窗口内命中 **1 条** |
+| `reward_std = 0.0625`（`std_grouped_rewards.mean()`，无偏；二值组 `[1,0,0,0]` 的 std = 0.5） | Σ 组内 std / 8 组 = 0.5 ⟹ **1 个组中 1 条** |
 
-两种口径给出**完全相同**的 (reward, reward_std) 对，所以只能靠**取值网格**区分（见本节末）。
+⚠️ 两种分母给出**完全相同**的 (reward, reward_std) 对（这就是当初无法从数值区分的原因），
+⟹ 只能靠**步数口径**定案。
 **与分母无关、可直接引用的结论**：`grad_norm` 由"窗口内是否存在命中"门控。
 
 | 观测（`IandS-rlfix` 30 步 / `rl300` 150 步） | 值 |
