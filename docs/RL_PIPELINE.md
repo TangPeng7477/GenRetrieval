@@ -561,6 +561,14 @@ T2 占 **63%**、单次迭代 **3.5 h**。而 `T1`（`SidDataset`）与 `T3`（`
 |---|---|
 | `scripts/rl/make_user_subset.py` | 抽 N 个用户（种子固定）⟹ 产出 `train/*.<tag>.csv`、`test/*.<tag>.csv`、`info/*.user_subset.<tag>.json`（清单含 seed / 用户列表 / 行数 / 建议参数）。**流式 `csv` 读写、不整表进内存**（train CSV 222 MB），并保留字段原始文本（下游有 `eval(row['history_item_id'])`） |
 | `RL_TASKS` / `RL_T2_SAMPLE` / `RL_T3_SAMPLE` | 任务子集 + 行数上限。`RL_TASKS` 带 **shell 级真值陷阱防护**（放错位置会被前置检查抢掉——已修正到配置区最前）。`rl.py` 侧同名参数，非法值直接 `raise` |
+
+🔴 **`rl_tasks` 必须用 `parse_csv_list()` 解析，不能 `str(rl_tasks).split(",")`。**
+fire 会把命令行 `T1,T3` 解析成 **tuple** ⟹ `str(('T1','T3'))` = `"('T1', 'T3')"` ⟹ split 出
+`["('T1'", " 'T3')"]` ⟹ 判为未知任务、直接 `raise`。
+`[实测]` 2026-09-25 云端 `RL_TASKS=T1,T3` 就是这么崩的（`ValueError: ... 收到 ["('T1'", "'T3')"]`）。
+⚠️ **默认值不暴露这个 bug** —— 默认 `rl_tasks="T1,T2,T3"` 是 **Python 字符串**，只有**命令行显式传**才会变 tuple，
+所以此前所有 run 都没踩到。这与 `sft.py:147` 记的是**同一个坑**（`rl.py:15` 早就 import 了这个助手）。
+自查一行：`grep -rn 'str([a-zA-Z_]*)[.]split(",")' --include="*.py" .`（命中非注释即为隐患）。
 | `TRAIN_FILE` / `EVAL_FILE` / `SID_INDEX` / `ITEM_META` / `INFO_FILE` / `TEST_FILE` | **五条 RL 路径 + 评估的 `TEST_FILE` 改为 `${VAR:-default}`**（原来都是写死的普通赋值）⟹ 可指向子集 CSV |
 
 `[实测]` 本机实跑 `--n-users 5000 --seed 42`：

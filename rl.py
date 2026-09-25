@@ -203,7 +203,12 @@ def train(
     sample = -1
 
     # ---- [本项目新增] 任务子集（默认 T1,T2,T3 = 原版行为）----
-    _rl_tasks = [t.strip() for t in str(rl_tasks).split(",") if t.strip()]
+    # 🔴 必须用 `parse_csv_list`，不能 `str(rl_tasks).split(",")`：
+    #    fire 会把命令行里的 `T1,T3` 解析成 **tuple** ⟹ `str(('T1','T3'))` = `"('T1', 'T3')"`
+    #    ⟹ split 出 `["('T1'", " 'T3')"]` ⟹ 全部"未知任务"直接 raise。
+    #    [实测] 2026-09-25 云端 `RL_TASKS=T1,T3` 就是这么崩的（默认值是 Python 字符串时不会暴露）。
+    #    这与 `sft.py:147` 记的是**同一个坑**（`rl.py:15` 早就 import 了这个助手，我却又手写了一遍错的）。
+    _rl_tasks = parse_csv_list(rl_tasks)
     _valid = ("T1", "T2", "T3")
     if not _rl_tasks:
         raise ValueError("rl_tasks 不能为空（默认 'T1,T2,T3'）")
