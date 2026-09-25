@@ -13,11 +13,16 @@ set -euo pipefail
 #   results/ 按**阶段**分层：SID 阶段的产物在 results/sid*/（rq/*.py 写），
 #   SFT 阶段统一收在 results/sft/ 下，互不混淆。
 #   模型        outputs/<EXP_ID>/final_checkpoint/
-#   评估结果    results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].json
-#   版本元数据  results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].meta.json
-#   指标        results/sft/<EXP_ID>/eval_<域>_beam<B>[_n<N>].metrics.json
+#   评估结果    results/sft/<EXP_ID>/eval_<域>_beam<B>[_samp][_n<N>][_<TAG>].json
+#   版本元数据  results/sft/<EXP_ID>/eval_<域>_beam<B>[_samp][_n<N>][_<TAG>].meta.json
+#   指标        results/sft/<EXP_ID>/eval_<域>_beam<B>[_samp][_n<N>][_<TAG>].metrics.json
 #   日志        logs/sft/<EXP_ID>/
-#   ⟹ 光看路径就知道是哪个阶段、哪个版本；换 beam / 样本数也不会互相覆盖。
+#   ⟹ 光看路径就知道是哪个阶段、哪个版本；换 beam / 采样 / 样本数 / **评估集**都不会互相覆盖。
+#   🔴 `_<TAG>` = **非默认 TEST_FILE** 时自动加，取文件名最后一段（`IandS_5_test.u5k.csv` -> `_u5k`）。
+#      没有它的时候踩过一次真事故（[实测] 2026-09-25）：同一个 EXP_ID 先在**全量** test 上评、
+#      再在**子集** test 上以 `MAX_SAMPLES=0` 评 ⟹ 两次写的是**同一个文件**
+#      ⟹ 汇总表里 `n=50,982` 那行被 `n=5,000` 静默顶掉（全量锚点从表里消失）。
+#      默认 TEST_FILE 不加后缀 ⟹ 旧路径与旧脚本行为逐位不变。
 #
 # ---- 汇总表（docs/SFT_EVAL_RESULTS.md）----
 #   收尾自动重扫 results/sft/ 重写该表（全量重扫 ⟹ 幂等）。
@@ -104,7 +109,15 @@ if [ "${DO_SAMPLE}" = "True" ]; then
 else
   SAMP_TAG=""
 fi
-EVAL_TAG="beam${NUM_BEAMS}${SAMP_TAG}${SAMPLE_TAG}"
+# 评估集后缀：非默认 TEST_FILE 必须带，否则会与全量评估**互相覆盖**（详见文件头「命名规范」）。
+#   取文件名最后一段做标签：IandS_5_test.u5k.csv -> _u5k；无扩展段时退化为整名。
+TEST_TAG=""
+if [ "${TEST_FILE}" != "${SFT_DIR}/test/${DOMAIN}_5_test.csv" ]; then
+  _tt="$(basename "${TEST_FILE}" .csv)"     # IandS_5_test.u5k
+  _tt="${_tt##*.}"                          # u5k（无 '.' 时原样返回）
+  TEST_TAG="_${_tt}"
+fi
+EVAL_TAG="beam${NUM_BEAMS}${SAMP_TAG}${SAMPLE_TAG}${TEST_TAG}"
 OUT_DIR="results/sft/${EXP_ID}"
 LOG_DIR="logs/sft/${EXP_ID}"
 RESULT_JSON="${OUT_DIR}/eval_${DOMAIN}_${EVAL_TAG}.json"
