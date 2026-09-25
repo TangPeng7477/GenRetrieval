@@ -895,9 +895,35 @@ topk_indices = torch.multinomial(softmax(accumulated_log_probs),
    里 warper 是在 merge 之后 append）。这与 **`evaluate.py` 早已修过的坑同源**
    —— 修复后测试路径恢复为**确定性 `BEAM_SEARCH`**，训练路径保持 `do_sample=True`（探索所需）但不再带 warper。
 
+🔴 **实际生效值（判决式核验，2026-09-25，用真实 `GenerationMixin._prepare_generation_config`，非复刻逻辑）**
+
+前提：`models/Qwen3-0.6B/generation_config.json` **本身就存着**
+`do_sample=true / temperature=0.6 / top_k=20 / top_p=0.95`（`transformers_version: 4.51.0`）。
+因为模型版本 ≥ 4.50，**不显式传 `use_model_defaults` 时回填默认开启** ⟹ 所谓"回填"不是凭空造默认值，
+而是**把模型自带的推荐采样参数搬进你传的 config**；只搬「传入值 == `GenerationConfig()` 全局默认 且 模型值 != 全局默认」的键。
+
+| 路径 | 修复前（未传 `use_model_defaults`） | 修复后（`=False`） |
+|---|---|---|
+| **训练路径**（`beam_search=True`，`minionerec_trainer.py:483-496`） | `do_sample=True`、**`temperature=0.6`**、`top_k=None`、`top_p=None` | `do_sample=True`、**`temperature=1.0`**、`top_k=None`、`top_p=None` |
+| **测试路径**（`test_generation_config`） | `do_sample=`**`True`**、`temperature=0.6`、`top_k=`**`20`**、`top_p=`**`0.95`** | `do_sample=`**`False`**、`temperature=1.0`、`top_k=None`、`top_p=None` |
+
+⚠️ **我先前把训练路径写成"被覆盖成 0.6/20/0.95"，那是错的** —— 代码里 `top_k=None, top_p=None`
+是**显式**写的，`None ≠ 全局默认(50 / 1.0)` ⟹ **不在回填范围**，一直就是 `None`。
+`0.6/20/0.95` 那三个是**测试路径**修复前的值。日志自证：训练路径只报 `{'temperature': 0.6, ...}`
+（= `rlsmoke` 的 warning），测试路径报 4 键（= `rl300` 的 warning）；本机用真函数复现出的两条 warning
+与云端日志**逐字一致**。（顺带：`bos_token_id: 151643` 也在回填清单里，此前没提。）
+
+🔴 **由此产生一个跨 run 混淆**：起点采样温度在 run 之间变过 —— `rlsmoke` / `rl300` = **0.6**，
+`rlfix` / `rlprobe` = **1.0** ⟹ §6.8② 那张命中率表（0.90% vs 0.52%）**不能跨 run 直接比**
+（温度更高 ⟹ 分布更散 ⟹ 命中率偏低，方向与观察一致）。跨 run 只能比"同一配置内部"的趋势。
+
+✅ **附带澄清（避免误归因）**：warper 的挂载在 `_merge_criteria_processor_list`**之后**、且**仅当
+`do_sample=True`**（`generation/utils.py:1248/1251`）。但 `-inf` 经 `Temperature` 缩放、或经
+`TopK/TopP` 的 `masked_fill(-inf)` 之后**仍是 `-inf`** ⟹ 温度/TopK/TopP **不会**破坏约束
+（它们只改分布形状）。⟹ **它们不是"吐违规 token"的成因**，成因是上面那条"凑数票"。
+
 🔴 **通用红线**：任何"逐步约束"都必须保证「每步允许集 ≥ HF 需要的候选数（`2×num_beams`）」，
-或保证"合法项分数恒有限"；否则 `multinomial`/`topk` 的凑数行为会**静默绕过约束**。
-排查一行命令：`grep -o "at step [0-9]*" <log> | sort | uniq -c`（**`at step 0` 为 0 ⟹ 掩码在第 0 步是对的**）。
+或保证"合法项分数恒有限"；否则 `multinomial`/`topk` 的凑数行为会**静默绕过约束**。排查一行命令：`grep -o "at step [0-9]*" <log> | sort | uniq -c`（**`at step 0` 为 0 ⟹ 掩码在第 0 步是对的**）。
 
 ### ✅ 云端验证（2026-09-25，`IandS-rlfix`）
 
