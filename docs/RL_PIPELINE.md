@@ -651,8 +651,37 @@ MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=u5k \
 NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bash rl_run0.sh
 ```
 
-⚠️ `EVAL_STEP=99999` 是必须的（**>`> 实际总步数`**）：只给 `EVAL_FILE` 而不关内部 eval 的话，
+⚠️ `EVAL_STEP=99999` 是必须的（**`> 实际总步数`**）：只给 `EVAL_FILE` 而不关内部 eval 的话，
 `999` 会在 step 999 触发一次 **5,000 个 batch ≈ 21 min** 的评估（不是全量时那 2.5 h，但仍是纯浪费）。
+
+**断点续训（`RESUME=`）**
+
+`rl_run0.sh:141/297` 支持 `RESUME=<checkpoint 目录>`，透传 `--resume_from_checkpoint`：
+HF `Trainer` 会恢复 `global_step` / 优化器动量 / LR scheduler / RNG ⟹ **从断点接着跑，cosine 不重来**。
+`RESUME=True` 也行（fire 解析成 bool ⟹ HF 自动取 `output_dir` 里最新的 checkpoint）。
+
+```bash
+TRAIN_FILE=… EVAL_FILE=… RL_TASKS=T1,T3 RL_T3_SAMPLE=977 \
+MODEL_PATH=outputs/IandS-all/final_checkpoint USE_LORA=False RUN_TAG=u5k \
+RESUME=outputs/IandS-u5k/checkpoint-999 NUM_TRAIN_EPOCHS=1 \
+TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bash rl_run0.sh
+```
+
+**续训前先验两件**（缺 `optimizer.pt` 时 HF 会退回"优化器从零"，Adam 动量丢失 ⟹ 训练分布被扰动，
+那样不如重跑）：
+
+```bash
+ls outputs/IandS-u5k/checkpoint-999/          # 期望：optimizer.pt + scheduler.pt + trainer_state.json + model.safetensors
+python -c "import json,io; s=json.load(io.open('outputs/IandS-u5k/checkpoint-999/trainer_state.json')); print(s['global_step'], s['epoch'], s.get('max_steps'))"
+```
+
+期望 `global_step=999`、`max_steps=2675`；跑起来后日志应出现 HF 的
+`Continuing training from checkpoint…`（global_step 999），进度条**从 999 起**。
+
+⚠️ **`SAVE_STEPS` 默认 `0.1` 是"比例"** —— 与 `EVAL_STEP` 同一套语义（`<1` 当比例、`≥1` 当绝对步数）：
+想按绝对步存就传 ≥1 的值（如 `999`）；`0.1` 表示按总步数的 10% 间隔存。
+⚠️ 续训时 `save_steps=999` 会在 **step 1998** 再存一次（= 一个安全断点），
+而 `save_steps=999999` 则全程不存 —— 训练结束脚本仍会写 `final_checkpoint/`。
 
 ⚠️ **两处诚实边界**：① "同用户"只覆盖 **T1/T3**（占全量 81%，也正是承载用户信号的两路），
 T2 无用户维度、被整体去掉；② 于是任务构成变成 `T1:T3`（无 T2）⟹ 与全量 run 的 `T1:T2:T3` 不同，
