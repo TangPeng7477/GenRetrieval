@@ -21,6 +21,19 @@ Thumbs.db
 logs/
 outputs/
 checkpoints/
+# 🔴🔴 尾斜杠 = 只匹配**目录**。这些目录一旦被软链到数据盘（AutoDL 迁移，见 docs/SFT_PIPELINE §3.10），
+#     git 把 symlink 当**文件** ⟹ 上面三条**全部失效** ⟹ `git add .` 会把软链本身加进索引。
+#     [实测] 2026-09-25 云端：`git status` 出现 `A  outputs`，而本地（真目录）完全看不出来。
+#     ⟹ 补一组**根锚定、不带斜杠**的规则，专门覆盖 symlink 情形（对目录是冗余的，无害）。
+#     ⚠️ 同类坑：任何可能被软链的路径都要这样补一份。`data/` **不要软链**
+#        —— 它下面有入 git 的文件（`*.stats.json` 等），软链会让它们全部显示为已删除。
+/logs
+/outputs
+/checkpoints
+/.venv
+/models
+/.wheels
+/results
 # ⚠️ git 不支持行尾注释，写在 pattern 后面会让整条规则失效（2026-09-14 实测：/models/ 因此没生效）
 # 仅忽略根目录下的模型下载目录（不能写 models/，否则会误伤 rq/models/ 与 baseline/models/）
 /models/
