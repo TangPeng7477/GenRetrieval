@@ -678,6 +678,27 @@ python -c "import json,io; s=json.load(io.open('outputs/IandS-u5k/checkpoint-999
 期望 `global_step=999`、`max_steps=2675`；跑起来后日志应出现 HF 的
 `Continuing training from checkpoint…`（global_step 999），进度条**从 999 起**。
 
+🔴 **但 `checkpoint-999` 为什么会根本不存在**（`[实测]` 云端 `ls` 报 `No such file or directory`，
+trainer_state 也 FileNotFound）：
+
+`save_strategy="steps"` 的落盘发生在 `_maybe_log_save_evaluate` 内，而该函数**先 eval、后 save**：
+`trainer.py:3219-3229` 里 `if self.control.should_evaluate: → self._evaluate(...)` 在前，
+`if self.control.should_save: → self._save_checkpoint(...)` 在后。
+那次 kill 正好落在 **step 999 触发的内部 eval 中**（日志停在 `0/50984`，跑完要 2.5 h）
+⟹ `_save_checkpoint` **从未被执行** ⟹ 断点不存在；
+且 `final_checkpoint/` 也没有 —— 它在 `trainer.train()` **返回之后**才写（`rl.py:516-530`）
+⟹ **前 999 步（≈53 min）的权重无法找回，只能重跑**。
+
+🔴 **操作红线**：**eval 跑完才存 ckpt** ⟹ 在 eval 窗口里 kill，丢的是**那个 step 的断点**；
+能续到的最近断点是**上一次**触发点的，不是当前这个。
+
+**给长跑买保险**：`SAVE_STEPS=999 SAVE_TOTAL_LIMIT=1` ⟹ 只保留**最新**一个断点（≈6 GB，
+不会像 `limit=3` 那样累积到 ~18 GB），随时 `RESUME=True` 续上。
+（`EVAL_STEP` 默认 `0.0999` 是**比例**、不是"关" ⟹ 默认仍会在 ~10% 总步数处做一次内部 eval。
+另两条已核：`EVAL_STEP>1` 时 TrainingArguments 强制整数（`training_args.py:1677-1680`）；
+`save_steps % eval_steps == 0` 那条约束**只在 `load_best_model_at_end=True` 时生效**（`:1687`），
+本仓三处均未设 ⟹ `EVAL_STEP=99999` + `SAVE_STEPS=999` 可共存，不会报错。）
+
 ⚠️ **`SAVE_STEPS` 默认 `0.1` 是"比例"** —— 与 `EVAL_STEP` 同一套语义（`<1` 当比例、`≥1` 当绝对步数）：
 想按绝对步存就传 ≥1 的值（如 `999`）；`0.1` 表示按总步数的 10% 间隔存。
 ⚠️ 续训时 `save_steps=999` 会在 **step 1998** 再存一次（= 一个安全断点），
