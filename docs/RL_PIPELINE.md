@@ -44,6 +44,43 @@ prompt 全在 `pre()` 里现场拼：
 
 > ⚠️ `rl.py:134` 里 `RLSeqTitle2SidDataset` 的 `sample=10000` 是**硬编码**的上限，
 > 想要全量要改代码或加参数（当前未改，作为已知差异记录）。
+>
+> ⚠️ `RLTitle2SidDataset` 一个类实际产出**两路**（`data.py:836-850`，`'task': 'title2sid'`
+> 与 `'task': 'description2sid'` 两个循环）。所以"三个 Dataset 类"≠"三个任务"，实际是 **4 路**。
+
+### 1.2 为什么 RL 的三路和 SFT 的四路**不是同一套**（结构原因，不是随意选的）
+
+🔴 **RL 三路的 target 全部是 SID** —— 这不是巧合，是 `rule` 奖励的硬约束。
+
+`rule` 奖励的定义是「生成出的 SID 与目标 SID **完全相等**」（`rl.py:207-305`）。
+所以凡是**目标为 title** 的任务（SFT 的 T2a `sid2title`、T3 `seq2title`）在 RL 里**拿不到规则奖励**
+（要判定得用 `semantic` 奖励，而它缺 `--ada_path`，见 §8 待办 #3）。
+于是 MiniOneRec 把它们**换成反方向的"→SID"**：
+
+| SFT 任务 | 目标 | RL 里为什么不用 / 换成什么 |
+|---|---|---|
+| T1 `seq2sid` | SID | ✅ 原样保留（`SidDataset`，主任务） |
+| T2b `title2sid` | SID | ✅ 原样保留（`RLTitle2SidDataset` 的 title 分支） |
+| T2a `sid2title` | **title** | ❌ 规则奖励判不了 ⟹ RL 侧对应类是 `RLSid2TitleDataset`，**已被注释掉**（`rl.py:192`） |
+| T3 `seq2title` | **title** | ❌ 同上 ⟹ 换成**反方向** `seqtitle2sid`（历史**标题**序列 → SID） |
+
+**组织方式与 SFT 完全一致**：`ConcatDataset` 拼起来 + `shuffle(seed)`，单阶段混洗、
+无任务权重、无 task tag（`rl.py:200-205`）。这一点和 SFT §6.7 的定版配方是同构的。
+
+**验证集只用一个 `SidDataset`**（`rl.py:202`）⟹ 与 **SFT 的验证集完全同源、恒为 T1**
+（对应 `SFT_PIPELINE` 里「验证集恒为 T1」那条，`sft.py:471`）。
+⟹ 训练内 `HR@k` 是**纯 T1 口径**的轨迹，只看相对变化，别拿去和别的口径横比。
+
+⚠️ **两路 prompt 格式是 SFT 从没训过的**（RL 会自己适应，但早期步会很噪）：
+
+| 路 | SFT 有没有训过 | 说明 |
+|---|---|---|
+| `seqtitle2sid` | ❌ **没有** | SFT 有 `seq2title`（历史 SID → title），方向相反、格式不同 |
+| `description2sid` | ❌ **没有** | 走 `text2sid` 模板但只填 description；SFT 的 T4 是 title+brand+categories+features，且**没有 Dataset 类**（`SFT_PIPELINE §7`） |
+
+这两路合计约占总步数的 **~22%**（50k + 10k / 269k）。打通流程阶段建议**保留默认**
+（SFT 的教训正是"辅助任务的语义锚不能砍"），但要知道**早期 RL 的一部分"学习"其实是在适应新格式**，
+不是 T1 变好。若想拿更干净的信号，可注释掉 `train_data3`（`rl.py:190`）或 `description2sid` 循环。
 
 ---
 
