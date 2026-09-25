@@ -785,10 +785,16 @@ GRAD_ACC_STEPS=4 SYNC_REF_MODEL=True NUM_TRAIN_EPOCHS=2`
     4,533 test**，5-core + 滑窗 10 + **时间 8:1:1**（非 LOO），骨干 **Qwen3-1.7B** 全参；
     而我们 IandS = **25,848 items / LOO / 0.6B**（与 TIGER/LC-Rec 7/8 同类目同构，见 EVAL_PROTOCOL）。
     ⟹ 数字不可横比；我们可横比的锚点仍是 **TIGER 自带 sasrec 0.0422 vs 我们 sasrec 0.0395（同梯队）**。
-  💡 **意外发现**：MiniOneRec 原版文档说其 GRPO 在 "**3,686 个商品**" —— 与 SIDReasoner 的 Industrial
-    商品数一致 ⟹ **被验证有效的 GRPO regime 全在 ~3.7K 商品的小空间**；我们 25,848 的差距来自
-    **数据预处理**（保留 item 远多于 5-core），不在 RL 本身。
-    ⟹ 新增对齐选项 **R5：把 IandS 预处理对齐到 5-core（≈3.7K 商品）再跑 RL** —— 直接落回已验证 regime。
+  🔴 **R5 修正（2026-09-26，用户二次纠错）**：上面的"意外发现"**归因错误** ——
+    3,686 不是"我们预处理保留太多 item"，而是**两个不同的数据集**：
+    - MiniOneRec / SIDReasoner 用的是 **Amazon Reviews 2018**（`Industrial_and_Scientific_5_2016-10-2018-11`，3,686 items）
+    - 本项目用的是 **Amazon Reviews 2023**（25,847 items）—— **`DATASET.md:27` 早已写明"item 规模放大到 25,847（**7 倍**）"**
+    ⟹ 我昨晚等于把项目既定事实当成新发现重说了一遍，且归因写错。
+  ✅ **正确表述**：原版 +17% 的 GRPO 收益是在 **2018 版 3,686 商品**的小空间里验证的；
+    我们主动升级到 2023（7× 商品）后，**GRPO 组内信号密度随之下降** —— 今晚的四连平正是这个代价的量化。
+  ⟹ **R5（改）**：不再"改预处理"（做不到且不必要），改为**对照复现**：用本地 MiniOneRec 的
+    2018 IandS 数据（`MiniOneRec_oneGPU_preject/data/Amazon/`，现成）在本流水线跑一遍 GRPO，
+    看能否复现 +17% ⟹ 区分"我们的 pipeline 有问题" vs "数据集规模使然"（半天工作量，可选）。
 - **LatentR3**（arXiv 2505.19092）：0/1 奖励计算贵且稀疏 ⟹ **用 target 的困惑度做连续奖励** +
   batch-relative advantage（连续奖励下 group-relative 会给全低质量组正优势）。与我们四连平的病灶一致。
 - **JD RecSys'25**（Adaptive Loss Balancing）：工业 ranker 当 RM 有曝光偏置 ⟹ 奖励噪声要自适应加权 —— 远期。
