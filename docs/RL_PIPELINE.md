@@ -386,18 +386,32 @@ step 0 时 adapter 输出恒为 0 ⟹ 策略与参考模型**逐位相同**，KL
 也应该能看到 `reward > 0` / `reward_std > 0` / `grad_norm > 0`**。
 🔴 这是本轮最强的判据：**不需要**用 `ADD_GT=True` 扰动训练语义去验梯度链了。
 
-**② 但稀疏度是真瓶颈**（别指望一步到位）：
+**② 但稀疏度是真瓶颈**（别指望一步到位）。⚠️ 先纠正一个我一度写错的机制：
 
-| 配置 | 单条候选命中率 | **组（G=4）至少一个命中** | 怎么算的 |
-|---|---:|---:|---|
-| Top-4 beam（`BEAM_SEARCH=True`，默认） | — | ≈ **1.9%** | 4 条候选**就是** top-4（确定性、互不重复）⟹ 直接 = `HR@4`（`HR@3`=0.0159 / `HR@5`=0.0226 插值） |
-| 采样（`BEAM_SEARCH=False`） | ≈ `HR@1` = **0.0067** | ≈ **2.7%** | 4 条独立同分布 ⟹ `1 − (1 − 0.0067)^4` |
+🔴 **`BEAM_SEARCH=True` 不等于"确定性 beam search"**。`minionerec_trainer.py:480-495` 里它是：
+
+```python
+if self.beam_search:
+    GenerationConfig(num_beams=self.num_generations,        # 4
+                     num_return_sequences=self.num_generations,
+                     top_k=None, top_p=None, temperature=self.temperature,  # 1.0
+                     do_sample=True)                        # 🔴
+```
+
+`num_beams>1` **且** `do_sample=True` ⟹ HF 判定的模式是 **`BEAM_SAMPLE`（束采样，随机）**，
+**不是 `BEAM_SEARCH`**（`configuration_utils.py:382`；同 §`SFT_PIPELINE` 里那条 HF 模式判定红线）。
+⟹ `BEAM_SEARCH=True/False` 两者的实际差别**很小**（都是采样，只是一个在 4 条子里挑）。
+
+| 配置 | 实际 HF 模式 | 单条候选命中率 | 组（G=4）至少一个命中 |
+|---|---|---:|---:|
+| `BEAM_SEARCH=True`（默认） | **BEAM_SAMPLE**（随机） | ≈ **0.63%**（`[实测]` 640 条命中 4） | ≈ 2.5% |
+| `BEAM_SEARCH=False` | SAMPLE（纯采样） | ≈ `HR@1` = 0.67% | ≈ 2.7% |
 
 ⟹ **约 97~98% 的组 advantage 全 0**，只有极小一部分 prompt 贡献梯度。
-🔴 注意 beam 那一行**不能**按独立采样算（我曾算成 7.3%，错）—— beam 的 G 条是同一个搜索的
-top-G，是"整体命中率"而不是"G 次独立机会"。
-且 beam 搜索是**确定性**的 ⟹ 目标不在 top-4 里就**永远没有探索机会**（经典 exploration 缺失）。
-真实增益要靠 `MAX_STEPS` 堆量，或后续上采样 / 更大 `NUM_GENERATIONS`。
+
+✅ **好消息**：束采样是**随机**的 ⟹ **探索是有的** —— 我早先担心的
+"确定性 beam 会让目标不在 top-4 时永远没有探索机会" **不成立**（那是我按 `BEAM_SEARCH` 的字面意思推的，错）。
+真实增益仍然要靠堆量：`MAX_STEPS`、`NUM_GENERATIONS`↑、或调 `TEMPERATURE`（现为 1.0，分布很散）。
 
 **③ 成本（务必先限步，别直接全量）** `[推算]`：
 
