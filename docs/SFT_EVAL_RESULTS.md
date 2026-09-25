@@ -1,6 +1,6 @@
 # SFT 评估结果表
 
-> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **1** 条记录，生成于 2026-09-19T02:43:27。**请勿手改。**
+> 自动生成（`./.venv/Scripts/python.exe scripts/sft/collect_eval_results.py`），共 **8** 条记录，生成于 2026-09-25T14:10:34。**请勿手改。**
 >
 > 数据源：`results/sft/<EXP_ID>/eval_*.{meta,metrics}.json`（该目录被 `.gitignore` 忽略，明细不入仓；**只有本表入仓**，供跨会话 / 跨环境对照）。
 
@@ -19,6 +19,13 @@
 
 | EXP_ID | 模型版本 | 格式 | 推理时间 | 样本 | beam | HR@1 | HR@5 | HR@10 | HR@20 | NDCG@10 | 耗时 | commit | 备注 |
 |---|---|:--:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|
+| **IandS-P1-T1** | `outputs/IandS-P1-T1/final_checkpoint` | chatml | 2026-09-19 12:00 | 50982 | 50 | 0.0008 | 0.0028 | 0.0038 | 0.0052 | 0.0023 | 159m19s (187ms) | `ad702fd` | 非训练产物 |
+| **IandS-P1-T1** | `outputs/IandS-P1-T1/final_checkpoint` | chatml | 2026-09-19 14:48 | 100 | 50 | 0.0100 | 0.0100 | 0.0100 | 0.0100 | 0.0100 | 33s (330ms) | `ad702fd` | 非训练产物 / 抽样 |
+| **IandS-P2-T2aT2b** | `outputs/IandS-P2-T2aT2b/final_checkpoint` | chatml | 2026-09-19 14:52 | 50982 | 50 | 0.0000 | 0.0001 | 0.0005 | 0.0012 | 0.0002 | 164m35s (194ms) | `ad702fd` | 非训练产物 |
+| **IandS-P2-T2aT2b** | `outputs/IandS-P2-T2aT2b/final_checkpoint` | chatml | 2026-09-19 14:50 | 100 | 50 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 34s (340ms) | `ad702fd` | 非训练产物 / 抽样 |
+| **IandS-all** | `outputs/IandS-all/final_checkpoint` | chatml | 2026-09-25 01:05 | 50982 | 50 | 0.0067 | 0.0226 | 0.0356 | 0.0541 | 0.0189 | 158m47s (187ms) | `5dde706` | 非训练产物 |
+| **IandS-all** | `outputs/IandS-all/final_checkpoint` | chatml | 2026-09-25 01:04 | 100 | 50 | 0.0000 | 0.0100 | 0.0200 | 0.0300 | 0.0086 | 35s (350ms) | `5dde706` | 非训练产物 / 抽样 |
+| **IandS-hs1-T2aT2b** | `outputs/IandS-hs1-T2aT2b/final_checkpoint` | chatml | 2026-09-19 03:07 | 100 | 50 | 0.0100 | 0.0100 | 0.0100 | 0.0100 | 0.0100 | 32s (320ms) | `986482` | 非训练产物 / 抽样 |
 | **IandS-hs1-T2aT2b** | `outputs/IandS-hs1-T2aT2b/final_checkpoint` | chatml | 2026-09-19 01:31 | 500 | 50 | 0.0020 | 0.0020 | 0.0040 | 0.0060 | 0.0026 | 1m51s (222ms) | `f5b9651` | 非训练产物 / 抽样 / 采样:隐式(旧记录) |
 
 ---
