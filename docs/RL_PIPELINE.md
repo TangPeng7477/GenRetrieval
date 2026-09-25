@@ -649,6 +649,43 @@ C. 连续两次 __call__ 后 count=2 ⟹ 每步重建即归零
 （区分是哪条路径）；② 在 `LogitProcessor.__call__` 里对 `count==0` 临时打印
 `sent[-3:]` 与 `len(prefix_allowed_tokens)`，直接看第 0 步的 mask 是否为空。
 
+**⑺ 🔴 内部 `evaluate()` 单次 ≈ 6 小时 —— 它才是长跑的主导成本（我原估 30 min，差 12×）**
+
+`rl.py:389/397` 设了 `eval_strategy="steps"` + `eval_steps=eval_step` ⟹ **HF 层的 `evaluate()` 会对
+整个 `eval_dataset`（50,984 条）跑 beam=10 生成**。`[实测]` 进度条：
+
+```
+683/50984 [04:40<5:56:55, 2.35it/s]      ⟹ 单次 eval ≈ 6.0 h
+```
+
+**`eval_steps` 的精确语义**（`trainer_callback.py:161-166 compute_steps`）：
+
+```python
+if num_steps < 1:  num_steps = math.ceil(max_steps * num_steps)   # <1 = 比例
+# 否则保持原值 = 绝对步数
+```
+
+| `EVAL_STEP` | `MAX_STEPS=300` 时的行为 | 内部 eval 次数 | 额外耗时 |
+|---|---|---|---|
+| `0.5` | `ceil(300×0.5)=150` ⟹ step 150 / 300 | 2 | **~12 h** |
+| `0.99` | `ceil(297)=297` ⟹ 仅 step 297 | 1 | ~6 h |
+| **`999`（> MAX_STEPS）** | 绝对步数 999 > 300 ⟹ **永不触发** | 0 | 0 |
+| `1.0` | ⚠️ 绝对 1 步 ⟹ **每步都 eval**（灾难） | 300 | — |
+
+🔴 **要快速拿 checkpoint：`EVAL_STEP=999`（关内部 eval）+ `TEST_DURING_TRAINING=False`**，
+300 步 ≈ **23 min**；HR 随后用 `evaluate_run0.sh` 拿（beam=50、`MAX_SAMPLES=5000` ≈ 15 min），
+比内部 eval 又便宜一个量级且**口径与 `IandS-all` 可比**。
+
+**⑻ `[实测]` 梯度链完全确认：`grad_norm` 纯由奖励稀疏度门控**
+
+| `reward` | `grad_norm` | `kl` |
+|---:|---:|---:|
+| 0.0（大多数步） | ~**0.0005**（≈0，只剩 KL 正则项的梯度） | 7e-4 ~ 1.3e-3 |
+| **0.03125**（≈4/128 命中） | **1.98** | ~1.1e-3 |
+
+⟹ 机制与 §6.8② 的预测完全一致：只有"组内有正样本"的步才产生有效梯度。
+`reward` 在 300 步里稳定复现 0.03125 ⟹ **奖励稀疏（~2.5%/组）是真瓶颈，不是链路问题。**
+
 ---
 
 ## 7. 本项目对 MiniOneRec 原版的改动清单
