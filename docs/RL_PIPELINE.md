@@ -578,12 +578,17 @@ train ∩ test 用户 = 50,982 ；seed=42 抽 5,000 个
   train/IandS_5_train.u5k.csv   208,999 -> 20,418 行 (21.2 MB)
   test /IandS_5_test.u5k.csv     50,982 ->  5,000 行 ( 5.5 MB)
   建议 RL_T3_SAMPLE = 977（= round(20,418 × 10,000 / 208,999)，保住全量的 T1:T3 配比）
-  训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ 668 步/epoch ≈ 55 min @4.9 s/step
+  训练集 = 20,418(T1) + 977(T3) = 21,395 行 ⟹ 669 步/epoch ≈ 55 min @4.9 s/step
 ```
 
 **完整性已判**：CRLF=**0**（全 LF）、列名与源一致、两文件 `user_id` 全部 ∈ S、
 **`train 用户集合 == S == test 用户集合`**（这才是目标）、`history_item_id` / `history_item_sid` 仍可 `eval()`、
 SID 串全部匹配 `<a_x><b_y><c_z>`、无 NaN。
+
+**数据集类冒烟已判**（本机 CPU，GPU 跑 55 min 前先走一遍这条"从未执行过的组合"）：
+`SidDataset(subset, sample=-1)` = **20,418**（= CSV 行数）、`RLSeqTitle2SidDataset(subset, sample=977)` = **977**
+（上限生效）、两者 prompt 均以 `<|im_start|>assistant\n` 结尾、completion 均为 `<a_x><b_y><c_z>\n`（与 rule 奖励的精确匹配口径一致）。
+⟹ 合计 **21,395 行 / 669 步/epoch**。
 
 **✅ 锚点已测（2026-09-25，`EXP_ID=IandS-all`，同一批 5,000 用户的 test，beam=50）**
 
