@@ -697,7 +697,24 @@ class ReReTrainer(Trainer):
                 eos_token_id=self.processing_class.eos_token_id
             )
         self.logits_processor = LogitsProcessorList([TemperatureLogitsWarper(temperature=self.temperature), ccc])
-        self.test_lp_list = LogitsProcessorList([ccc])
+
+        # 🔴 测试路径必须用**独立实例**（2026-09-25 修）。
+        #    `ConstrainedLogitsProcessor.__call__`（`LogitProcessor.py:49`）里要做
+        #      `input_ids.view(-1, self._num_beams, input_ids.shape[-1])`
+        #    而训练侧的 beam 宽度是 `num_generations`、测试侧是 `test_beam`，**两者可以不同**。
+        #    原先复用同一个 `ccc` ⟹ 测试生成时维度对不上，直接崩：
+        #      [实测] `RuntimeError: shape '[-1, 4, 93]' is invalid for input of size 930`
+        #             （`num_generations=4` / `test_beam=10`；930 = 10 × 93）
+        #    ⚠️ 只有 `num_generations == test_beam` 时才"恰好能跑" ⟹ 此前从未暴露
+        #       （历次冒烟都带 `TEST_DURING_TRAINING=False`，测试路径压根没执行过）。
+        #    独立实例同时避免 `count`（解码步计数）在两条路径间互相污染。
+        ccc_test = ConstrainedLogitsProcessor(
+                prefix_allowed_tokens_fn=self.prefix_allowed_tokens_fn,
+                num_beams=self.test_beam,
+                base_model=self.base_model,
+                eos_token_id=self.processing_class.eos_token_id
+            )
+        self.test_lp_list = LogitsProcessorList([ccc_test])
 
         # Generate completions using either vLLM or regular generation
         if self.args.use_vllm:

@@ -561,6 +561,44 @@ dtype 与 `paged_adamw_32bit` 下参数的存储精度。
 ⚠️ 另注：`max|d| ≈ 1e-6/5 步` ⟹ **5 步不足以判断长期是否有效**（若更新准相干，8451 步可累积到 ~1e-2；
 若近随机游走，`√8451 × 1e-6 ≈ 9e-5` 可忽略）。**必须靠更长的短跑（≥300 步）看 `reward`/`HR` 轨迹**。
 
+**⑷ 🔴 首跑暴露的 trainer bug：测试路径复用了训练侧的 `ConstrainedLogitsProcessor`（已修）**
+
+`TEST_DURING_TRAINING=True` 一开就崩（此前所有冒烟都带 `=False` ⟹ 测试路径**从未被执行过**）：
+
+```
+LogitProcessor.py:49  input_ids.view(-1, self._num_beams, input_ids.shape[-1])
+RuntimeError: shape '[-1, 4, 93]' is invalid for input of size 930
+```
+
+**根因**：`minionerec_trainer.py:689-700` 只造了**一个** `ccc` 实例，两处共用：
+
+| 路径 | beam 宽度 | 用的实例 |
+|---|---|---|
+| 训练 | `num_generations`（4） | `self.logits_processor = [TemperatureLogitsWarper, ccc]` |
+| 测试 | `test_beam`（10，见 `test_generation_config`） | `self.test_lp_list = [ccc]` ← 🔴 **同一个对象** |
+
+`ccc._num_beams` 是按训练侧算的（4），测试时却有 10 条 beam ⟹ `view(-1, 4, L)` 维度对不上。
+
+🔴 **只在 `(prompt 数 × test_beam) % num_generations ≠ 0` 时才崩** ⟹ 是否复现**取决于 batch 大小**：
+
+| prompt 数 | 行数 | `view(-1,4,93)` 可整除 | 结果 |
+|---:|---:|:--:|---|
+| 1 | 10 | ❌ | **崩**（= 云端这次） |
+| 2 | 20 | ✅ | 不崩（所以它"挑 batch"，更像偶发） |
+
+**修复**：测试侧另建一个 `num_beams=self.test_beam` 的独立实例（`ccc_test`）。
+⚠️ 顺带说明 `count`（解码步计数）**不是**问题：`ccc` 在 `_prepare_inputs` 里每步重建 ⟹ 自然归零；
+但独立实例能彻底避免两条路径互相污染。
+
+**验证**（本机 `torch` 隔离测试，与云端报错逐字一致）：
+```
+A. 复用训练侧实例（nb=4）：1 prompt -> RuntimeError: shape '[-1, 4, 93]' ... size 930  ✅ 复现
+                          2 prompts -> OK
+B. 测试侧独立实例（nb=10）：1 / 2 prompts -> OK  ✅
+C. 连续两次 __call__ 后 count=2 ⟹ 每步重建即归零
+```
+⚠️ **这是"此前从未执行过的代码路径"里藏的第一个 bug，可能不止一个** ⟹ 短跑要盯完整日志。
+
 ---
 
 ## 7. 本项目对 MiniOneRec 原版的改动清单
