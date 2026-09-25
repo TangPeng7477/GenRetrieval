@@ -768,6 +768,19 @@ export AUTO_COMMIT=1                        # 想设为默认（只加在云端 
 ⟹ 纪律：**开关变量必须先归一化赋值（`VAR="${VAR:-默认}"`）再引用；测试用例至少含 unset 一路。**
 （好消息：那次崩在**收尾**，评估本身已完整跑完、指标与汇总表正常落盘。）
 
+🔴 **这条纪律已有机器化体检**：`python scripts/tools/audit_shell_unbound.py`
+（默认扫 4 个入口脚本 `rl_run0.sh` / `sft_run0.sh` / `evaluate_run0.sh` / `beam_sweep.sh`；
+`--all` 扫仓库根全部 `*.sh`；**退出码 0=干净 / 1=有未解释命中**，可作闸门）
+—— 静态找出「**裸引用早于赋值**」的变量，即 `set -u` 下必崩的炸弹。
+
+它是**二次事故之后**才补的工具：`AUTO_COMMIT`（`evaluate_run0.sh`，修于 `5e13c54`）
+→ `USE_LORA`（`rl_run0.sh:36`，修于 `769f420`）。两次的**测试盲区完全相同** ——
+隔离测试里每个用例都显式设了该变量（`RL_PIPELINE §6.5` 的本地配方写的正是 `USE_LORA=True ...`）
+⟹ **「不传」这条真实默认路径从未被测到**。
+
+脚本每命中都会打印处理理由（`for`/`local`/`read` 语义赋值 / 判空守卫 / 人工复核登记），
+确认安全的登记进 `REVIEWED_SAFE`，以保持 0/1 输出有意义。已在含两类真炸弹的**正对照**上验证过会命中。
+
 手动重跑仍可：`${PY} scripts/sft/collect_eval_results.py`（不再需要 `./.venv/Scripts/python.exe` 这种平台相关写法）。
 
 `collect_eval_results.py` 扫描 `results/sft/*/eval_*.{meta,metrics}.json`，按同名主干配对后输出表格。
