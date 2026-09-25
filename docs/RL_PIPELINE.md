@@ -468,6 +468,57 @@ MODEL_PATH=outputs/IandS-rl0/final_checkpoint BATCH_SIZE=12 bash evaluate_run0.s
 （§6.1：`not is_peft_model` ⟹ `create_reference_model`）⟹ 24 GB 应够（§6.7 估 8~12 GB），
 若 OOM 就 `USE_LORA=True`（参考模型靠 `disable_adapter()` 复用，不额外占权重）。
 
+### 6.10 `[实测]` 首次云端冒烟（2026-09-25，`IandS-rlsmoke`，`MAX_STEPS=5`）
+
+起点 = `IandS-all/final_checkpoint`（SFT 定版）+ `USE_LORA=False`（全参）。
+
+**通过项（链路全通）**：
+
+| 项 | 实测 | 判读 |
+|---|---|---|
+| 前置护栏 | `<a_0>`=1 token，响应前缀 `<\|im_start\|>assistant\n`=3 token，`prefix_index=3` 成立，`vocab=152437` | ✅ 词表注册与模板真源一致 |
+| 训练集 | `num_rows = 270,432` | 208,999 + **51,433** + 10,000 |
+| 验证集 | `num_rows = 50,984`（= `valid/*.csv`） | ✅ |
+| `completion_length` | **5.0**（每步都是） | ✅ 约束解码在真实 trainer 里精确产出 `[3 SID + \n + EOS]` |
+| `categorical_diversity` | **1.0** | ✅ 4 条 beam 候选互不相同 |
+| `reward` / `reward_std` | 前 4 步 **0.0**，第 5 步 **0.03125 / 0.0625** | ✅ **起点模型第一次给出非零信号** |
+| `grad_norm` | 前 4 步 0，第 5 步 **1.6484** | ✅ 梯度确实回流（**不需要 `ADD_GT` 了**） |
+
+🔴 **修正 §6.8 的成本推算**：我按 SFT 的 `SidItemFeatDataset`（50,440）估 T2，但 RL 用的是
+`RLTitle2SidDataset` —— 它产出 `title2sid` **＋`description2sid`**（§1.2），实测 **51,433**。
+⟹ 合计 **270,432**（非 269,439）。
+
+**⑵ 步速与全量成本 `[实测]`**：
+
+```
+train_runtime = 25.08 s / 5 步 = 5.02 s/步（train_steps_per_second = 0.199）
+步数 = 270,432 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC 8) = 8,451 步/epoch × 2 = 16,902 步
+⟹ 全量 2 epoch ≈ 23.6 h，另加训练内 eval
+```
+
+⚠️ 比 §6.8 的推算（9~14 h）**慢得多** —— 因为全参 GRPO 的 ref 前向 + beam 生成都按 128 条
+序列/步算，比 SFT 的 teacher-forcing 贵得多。想缩短，优先级是**抬 `TRAIN_BATCH_SIZE`**
+（4→8 或 16，步数线性减半/四分之一；全参显存估 8~12 GB，24 G 有余量，但要冒烟看峰值）。
+
+**⑶ ⚠️ 未解疑点：`kl` 在全部 5 步都是 `0.0`**
+
+`use_lora=False` ⟹ `ref_model = create_reference_model(model)`（**真副本**，非 `disable_adapter` 路径），
+所以策略更新后 `kl` 本应 > 0。`kl` 用 k3 估计量 `exp(Δ)−Δ−1`（Powell 下界 ≥0），
+**恰好 0.0 意味着 ref 与 policy 的逐 token logprob 逐位相同**。
+
+注意第 1 步 `learning_rate = 0.0`（warmup）⟹ 该步无更新，kl=0 正常；但第 2~5 步
+LR 为 `1e-5 → 1.46e-6`，`grad_norm` 已达 1.65。
+
+**两个竞争假设（未定论）**：
+
+| # | 假设 | 若成立的含义 |
+|---|---|---|
+| a | **全参 bf16 下 LR=1e-5 的单步更新低于 bf16 分辨率被舍入** （`w≈0.02` 的 bf16 间距 ≈7.8e-5 > |Δw|≈1e-5）。⚠️ LoRA 路径不受影响 —— PEFT 默认把 adapter 上转 fp32（`autocast_adapter_dtype`） | RL 实际是空转，必须抬 LR 或换回 LoRA |
+| b | 更新发生了但太小，bf16 logits 分辨率下 logprob 逐位不变 | 只是"观测不到"，长期会累积 |
+
+**判决式检验（待跑）**：逐张量比对两个 `model.safetensors`。有差异 ⟹ 假设 b；
+**全部逐位相同 ⟹ 假设 a 成立**（此时必须先解决 LR/精度，否则跑 23 小时等于没跑）。
+
 ---
 
 ## 7. 本项目对 MiniOneRec 原版的改动清单
