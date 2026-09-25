@@ -1,6 +1,7 @@
 from datasets import Dataset
 from trl import GRPOConfig, GRPOTrainer
 import random
+import re
 import numpy as np
 import torch
 from data import D3Dataset, SidDataset, RLTitle2SidDataset, RLSeqTitle2SidDataset, RLSid2TitleDataset, RLSidhis2TitleDataset
@@ -35,8 +36,29 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def train(
-    # model/data params
+# ---- [本项目新增 2026-09-25] 部分信用奖励（阶段 0 判决：rule 的 0/1 精确匹配信号过稀 ⟹ 多数步零梯度）----
+# completion 与 target 都是 "<a_x><b_y><c_z>"（Trie 约束下必为合法 SID 路径）。
+# 档位：全对 1.0 / 前两位对 0.6 / 仅首位对 0.3 / 不匹配或格式非法 0.0。
+# 判据（RL_PIPELINE §6.9 阶段 0）：reward 非零步占比应从 ~13% 升到 >50%（起跑 2 min 即可看）。
+_SID_RE = re.compile(r'<a_(\d+)><b_(\d+)><c_(\d+)>')
+
+
+def sid_partial_credit(completion: str, target: str) -> float:
+    """0/1 精确匹配 → 逐位部分信用。格式非法一律 0（宁缺毋滥，不给噪声梯度）。"""
+    c = _SID_RE.fullmatch(completion.strip("\n\" "))
+    t = _SID_RE.fullmatch(target.strip("\n\" "))
+    if c is None or t is None:
+        return 0.0
+    if c.groups() == t.groups():
+        return 1.0
+    if c.group(1) == t.group(1) and c.group(2) == t.group(2):
+        return 0.6
+    if c.group(1) == t.group(1):
+        return 0.3
+    return 0.0
+
+
+def train(    # model/data params
     model_path: str = "",
     seed: int = 42,
     train_file: str = "",
@@ -357,6 +379,11 @@ def train(
                 rewards.append(0.0)
         return rewards
 
+    def partial_reward(prompts, completions):
+        history = [prompt2history[prompt] for prompt in prompts]
+        targets = [history2target[elm] for elm in history]
+        return [sid_partial_credit(completions[i], targets[i]) for i in range(len(completions))]
+
     def semantic_reward(prompts, completions):
         history = [prompt2history[prompt] for prompt in prompts]
         targets = [history2target[elm] for elm in history]
@@ -417,6 +444,12 @@ def train(
         reward_fun = semantic_reward
     elif reward_type == "sasrec":
         reward_fun = cf_reward
+    elif reward_type == "partial":
+        reward_fun = partial_reward
+    else:
+        raise ValueError(
+            f"reward_type 只接受 rule/ranking/ranking_only/semantic/sasrec/partial，收到 {reward_type!r}"
+        )
     
     os.environ['WANDB_PROJECT'] = wandb_project
     report_to = "wandb" if wandb_project or wandb_run_name else "none"
