@@ -731,6 +731,21 @@ NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bas
 advantage=0）——"大家都对一半" GRPO 推不动；rule 的均匀情况是全零，天然无此形态。
 **下一个最干净的实验**：同配置 `NUM_TRAIN_EPOCHS=2`（~1.6 h），直接检验预算假设。
 
+**🏁 预算假设也已排除（2026-09-26 凌晨，`EXP_ID=IandS-u5kp2`：从 u5kp 的 final_checkpoint 接力再训 1 epoch，~48 min）**
+`HR@1 0.0056 / HR@3 0.0148 / HR@5 0.0194 / HR@10 0.0332 / HR@20 0.0540 / HR@50 0.0818`
+⟹ HR@10 vs 锚点 −0.0010（0.4σ）、vs rule +0.0002、vs partial-1ep +0.0004 ⟹ **四连平**。
+⚠️ 接力 ≠ 真 2 epoch：LR 重新 warmup/退火、Adam 动量从零、KL 参考点变成 epoch-1 策略
+（`sync_ref_model=False` ⟹ ref = 启动时加载的模型）；且 HR@50 反而 −5%（0.0862→0.0818）、
+NDCG@50 −3% ⟹ 第二轮在**尾部**有轻微损害，方向与"KL 参考点漂移"一致。
+
+**🏁 阶段 0 收口结论**：四个 run 全部落在锚点 ±0.5σ 内（0.0342 / 0.0330 / 0.0328 / 0.0332），
+系统性排除了 ①奖励稀疏（partial 已修，密度 13%→50%）②奖励形状（0.3/0.6/1.0 档位）
+③训练预算（再吃一遍同样数据）。
+⟹ 剩下的解释是**RL 信号与 SFT 监督重叠**：rule/partial 的奖励都派生自 SFT 已用 CE 优化过的
+同一批"用户→下一条"，GRPO 无新信息可加，只是扰动（KL 动了 10 倍、HR 不动）。
+⟹ **RL 阶段收口**。如重启，先解决"信号与 SFT 不同源"——奖励改用 SFT 没见过的信号源
+（检索侧 top-K 命中/排序、多样性、时效性、或留出序列级指标），再谈算力与 epoch。
+
 **断点续训（`RESUME=`）**
 
 `rl_run0.sh:141/297` 支持 `RESUME=<checkpoint 目录>`，透传 `--resume_from_checkpoint`：
