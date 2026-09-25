@@ -722,6 +722,15 @@ NUM_TRAIN_EPOCHS=1 TEST_DURING_TRAINING=False EVAL_STEP=99999 SAVE_STEPS=999 bas
 跑法：阶段 0 命令加 `REWARD_TYPE=partial`；日志键随之变为 **`rewards/partial_reward`**；
 判据 = 起跑 2 min 内非零 reward 步占比 **~13% → >50%**。
 
+**➕ partial 变体实测（同日晚，`EXP_ID=IandS-u5kp`：`reward_type=partial`、B=16/GA=2、1 epoch、train ~50 min）**
+`HR@1 0.0056 / HR@3 0.0148 / HR@5 0.0194 / HR@10 0.0328 / HR@20 0.0534 / HR@50 0.0856`
+⟹ **同样持平**（HR@10 比 rule 低 0.0002、比锚点低 0.0014 ≈ 0.55σ）。
+奖励密度 13%→50%、KL 从 4e-4 抬到 0.002–0.011（动了 10 倍）而 HR@10 不动
+⟹ **奖励形状嫌疑被排除**；主要嫌疑剩「1 epoch 预算太小」与「RL 信号与 SFT 重叠（同一批监督对）」。
+⚠️ partial 特有的信号损失：`reward 非零但 reward_std=0`（组内 4 条全拿 0.3 ⟹ 组内无方差 ⟹
+advantage=0）——"大家都对一半" GRPO 推不动；rule 的均匀情况是全零，天然无此形态。
+**下一个最干净的实验**：同配置 `NUM_TRAIN_EPOCHS=2`（~1.6 h），直接检验预算假设。
+
 **断点续训（`RESUME=`）**
 
 `rl_run0.sh:141/297` 支持 `RESUME=<checkpoint 目录>`，透传 `--resume_from_checkpoint`：
