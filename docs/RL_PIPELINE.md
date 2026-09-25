@@ -404,27 +404,31 @@ if self.beam_search:
 
 | 配置 | 实际 HF 模式 | 单条候选命中率 | 组（G=4）至少一个命中 |
 |---|---|---:|---:|
-| `BEAM_SEARCH=True`（默认） | **BEAM_SAMPLE**（随机） | ≈ **0.63%**（`[实测]` 640 条命中 4） | ≈ 2.5% |
+| `BEAM_SEARCH=True`（默认） | **BEAM_SAMPLE**（随机） | **0.52%** `[实测]` | **2.1%** `[实测]` |
 | `BEAM_SEARCH=False` | SAMPLE（纯采样） | ≈ `HR@1` = 0.67% | ≈ 2.7% |
 
-⟹ **约 97~98% 的组 advantage 全 0**，只有极小一部分 prompt 贡献梯度。
+实测口径：`IandS-rlfix` 30 步 × 128 条候选 = **3,840 条命中 20 条**（0.52%/条）；
+30 步 × 32 组 = **960 组命中 20 组**（2.1%/组）；**有信号的优化步 = 5/30 ≈ 17%**。
+⟹ 与 `HR@1`/`HR@4` 的预测同量级 ✓（**奖励稀疏是真的，但比"97~98% 全 0"稍好**）。
+⚠️ 命中计数的**分布**形态有一个待核异常（每次有信号步都恰好 4 个组各中 1 条）——见 §6.10 ⑻。
 
 ✅ **好消息**：束采样是**随机**的 ⟹ **探索是有的** —— 我早先担心的
 "确定性 beam 会让目标不在 top-4 时永远没有探索机会" **不成立**（那是我按 `BEAM_SEARCH` 的字面意思推的，错）。
 真实增益仍然要靠堆量：`MAX_STEPS`、`NUM_GENERATIONS`↑、或调 `TEMPERATURE`（现为 1.0，分布很散）。
 
-**③ 成本（务必先限步，别直接全量）** `[推算]`：
+**③ 成本（务必先限步，别直接全量）** `[实测，2026-09-25]`：
 
 ```
-训练数据 = 208,999(SidDataset) + ~50,440(RLTitle2Sid) + 10,000(RLSeqTitle2Sid) ≈ 269,439
-步数     = 269,439 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC_STEPS 8) = 8,420 步/epoch × 2 epoch = 16,840 步
-单步     = 3050Ti [实测] 8.45 s（16 序列 × grad_acc 8）⟹ 4090D 按 3~4× 估 ≈ 2~3 s/步
-⟹ 全量约 9~14 h，另加 ~10 次训练内 eval
+训练数据 = 270,432（208,999 SidDataset + 51,433 RLTitle2Sid + 10,000 RLSeqTitle2Sid）
+步数/epoch = 270,432 / (TRAIN_BATCH_SIZE 4 × GRAD_ACC_STEPS 8 = 32) = 8,451
+步速       = 4.9 s/step（4090D，全参 GRPO + grad_ckpt，两次 run 互校）
+⟹ 1 epoch ≈ 11.5 h，2 epoch ≈ 23.6 h
 ```
 
-🔴 **`TEST_DURING_TRAINING` 的 eval 是隐藏开销**：`EVAL_STEP=0.0999` ⟹ 约 10 次全量验证集
-（50,984 条）beam=10 评估；按 `evaluate_run0.sh` 实测（beam=50 全量 2.6 h）折算 beam=10 ≈ 30 min/次
-⟹ **光 eval 就 ~5 h**。短跑务必调大 `EVAL_STEP`（如 `0.5`）或先关掉。
+🔴 **`TEST_DURING_TRAINING` 的内部 eval 是最大隐藏开销**：`EVAL_STEP=0.0999` ⟹ 约 10 次全量验证集
+（50,984 条）beam=10 评估。`[实测]` **单次 ≈ 6.0 h**（进度条 `683/50984 [04:40<5:56:55]`，
+`EVAL_BATCH_SIZE=4` + `max_new_tokens=16` + 每步 LogitProcessor，比 `evaluate.py` 贵得多）
+—— 我原先估的 30 min **差了 12 倍**。⟹ **短跑/长跑都建议 `TEST_DURING_TRAINING=False` + `EVAL_STEP=999`**。
 
 ### 6.9 推荐跑法：三阶段（先通链路，再要数字）
 
@@ -454,17 +458,20 @@ bash rl_run0.sh
 ⚠️ 若 3/4 仍恒 0 ——先用 `ADD_GT=True` 跑同样的 5 步做**对照**（§6.6）：
 `ADD_GT` 下有梯度而正常配置没有 ⟹ 说明是**奖励太稀疏**而非链路坏；两边都 0 ⟹ 链路坏。
 
-**阶段 B · 短跑（1~2 h，要轨迹）**
+**阶段 B · 短跑（~25 min，要轨迹）**
 
 ```bash
 MODEL_PATH=outputs/IandS-all/final_checkpoint \
-RUN_TAG=rl0 MAX_STEPS=300 EVAL_STEP=0.5 \
-TEST_DURING_TRAINING=True TEST_BEAM=10 \
+RUN_TAG=rl0 MAX_STEPS=300 \
+TEST_DURING_TRAINING=False EVAL_STEP=999 SAVE_STEPS=999 \
 bash rl_run0.sh
 #  -> outputs/IandS-rl0/
 ```
 
-- `MAX_STEPS=300` 把训练钉在 ~25 min。
+- `MAX_STEPS=300` 把训练钉在 ~25 min（`[实测]` 4.9 s/step × 300 ≈ 25 min）。
+- 🔴 **必须 `EVAL_STEP=999`** —— 若留着 `EVAL_STEP=0.5`，HF 层 `evaluate()` 会在 step 150/300 各跑一次
+  **全量验证集（50,984 条）beam=10**，单次 ≈ **6 h** ⟹ 这个"短跑"会变成 ~12 h（§6.10 ⑺）。
+  我早先在这里写过 `EVAL_STEP=0.5`，是**没验证过内部 eval 成本**就下的配方，已改。
 - 🔴 **别指望 `TEST_DURING_TRAINING` 给 HR 轨迹**（我原先这么写，错了）：它**每步都跑**、样本只有
   当前 micro-batch 的 **1~4 条** prompt、而且评的是**训练 batch 不是验证集** ⟹ `HR@k` 恒为 0 是必然。
   `EVAL_STEP` 对该路径**无效**。详见 **§6.10 ⑸**。
@@ -514,8 +521,8 @@ train_runtime = 25.08 s / 5 步 = 5.02 s/步（train_steps_per_second = 0.199）
 ⟹ 全量 2 epoch ≈ 23.6 h，另加训练内 eval
 ```
 
-⚠️ 比 §6.8 的推算（9~14 h）**慢得多** —— 因为全参 GRPO 的 ref 前向 + beam 生成都按 128 条
-序列/步算，比 SFT 的 teacher-forcing 贵得多。
+⚠️ 我早先按 3050Ti 实测外推出的"4090D 约 9~14 h"**偏快一倍**，已由 §6.8③ 的实测取代 ——
+根因是全参 GRPO 的 ref 前向 + beam 生成都按 128 条序列/步算，比 SFT 的 teacher-forcing 贵得多。
 
 🔴 **缩短时长：抬 `TRAIN_BATCH_SIZE` 没用**（我初版这么写过，错的）。总成本 ∝ **总生成条数**：
 
@@ -696,6 +703,20 @@ topk_indices = torch.multinomial(softmax(accumulated_log_probs),
 或保证"合法项分数恒有限"；否则 `multinomial`/`topk` 的凑数行为会**静默绕过约束**。
 排查一行命令：`grep -o "at step [0-9]*" <log> | sort | uniq -c`（**`at step 0` 为 0 ⟹ 掩码在第 0 步是对的**）。
 
+### ✅ 云端验证（2026-09-25，`IandS-rlfix`）
+
+配置刻意让**两条生成路径同时被走到**：`MAX_STEPS=30` + `TEST_DURING_TRAINING=True`
+（告警只在这条路径产生）+ `EVAL_STEP=999`（避开 ⑺ 那次 6 h 的内部 eval）+ `SAVE_STEPS=999`。
+
+| 判据 | 结果 |
+|---|---|
+| `grep -c "No valid tokens" <log>` | **0**（修复前：头 15 步就有 **87** 条） |
+| 覆盖的生成路径 | 测试路径 beam=10 **与** 训练路径 beam=4，**两者都跑过、都零告警** |
+| `completion_length` | 5.0（每步）—— 仍是精确的 `[3 SID + \n + EOS]` |
+| `categorical_diversity` | 1.0 |
+
+⟹ **判决式通过**：约束在两条路径上都真正生效了。
+
 **⑺ 🔴 内部 `evaluate()` 单次 ≈ 6 小时 —— 它才是长跑的主导成本（我原估 30 min，差 12×）**
 
 `rl.py:389/397` 设了 `eval_strategy="steps"` + `eval_steps=eval_step` ⟹ **HF 层的 `evaluate()` 会对
@@ -723,15 +744,43 @@ if num_steps < 1:  num_steps = math.ceil(max_steps * num_steps)   # <1 = 比例
 300 步 ≈ **23 min**；HR 随后用 `evaluate_run0.sh` 拿（beam=50、`MAX_SAMPLES=5000` ≈ 15 min），
 比内部 eval 又便宜一个量级且**口径与 `IandS-all` 可比**。
 
-**⑻ `[实测]` 梯度链完全确认：`grad_norm` 纯由奖励稀疏度门控**
+**⑻ `[实测]` 梯度链与奖励稀疏度 —— 两个日志数可唯一反解命中形态**
 
-| `reward` | `grad_norm` | `kl` |
-|---:|---:|---:|
-| 0.0（大多数步） | ~**0.0005**（≈0，只剩 KL 正则项的梯度） | 7e-4 ~ 1.3e-3 |
-| **0.03125**（≈4/128 命中） | **1.98** | ~1.1e-3 |
+`rule_reward` 是**二值 0/1**（`rl.py:305-316`，精确字符串匹配）。日志窗口 = `logging_steps=1`
+× `GRAD_ACC_STEPS=8` × `TRAIN_BATCH_SIZE=4` prompt = **32 组 / 128 条候选**
+（`minionerec_trainer.py:1138` 每次 `log()` 平均后 `clear()`）。所以：
 
-⟹ 机制与 §6.8② 的预测完全一致：只有"组内有正样本"的步才产生有效梯度。
-`reward` 在 300 步里稳定复现 0.03125 ⟹ **奖励稀疏（~2.5%/组）是真瓶颈，不是链路问题。**
+| 日志值 | 反解 |
+|---|---|
+| `reward = 0.03125` | 命中 = 0.03125 × 128 = **4 条** |
+| `reward_std = 0.0625`（= `std_grouped_rewards.mean()`，无偏） | Σ 组内 std = 2.0；二值组 `[1,0,0,0]` 的无偏 std = 0.5 ⟹ **唯一解 = 4 个组各命中 1 条** |
+
+| 观测（`IandS-rlfix`，30 步） | 值 |
+|---|---|
+| 有信号的优化步 | **5 / 30 ≈ 17%**（其余 25 步 `reward` 恰为 0） |
+| 有信号步的 `grad_norm` | 1.23 ~ 2.30 |
+| 无信号步的 `grad_norm` | **恰好 0.0**（前 8 步）；策略被推动过之后为 ~5e-4 |
+| `kl` | 0.0（前 8 步）→ 5e-4 起（与 `grad_norm` 同步出现） |
+| 步速 | **4.9 s/step** |
+
+🔴 **比早先那张表更准的一点**：`advantage = 0` **且** `kl = 0`（策略尚未被推动）时
+`loss ≡ 0` ⟹ `grad_norm` **恰好 0.0**，而不是"约 5e-4"。只有当策略已被推过一次（`kl > 0`）后，
+零 advantage 的步才会剩下约 5e-4 的 KL 正则梯度。这解释了前 8 步的**精确 0.0**。
+⟹ 结论不变但更硬：**没有命中的步完全不贡献梯度**，有效更新 ≈ 17% × 总步数。
+
+⚠️ **一个待核异常**：`reward` 在三个 run（`rlsmoke` / `rl300` / `rlfix`）里只要非零就
+**恒为 `0.03125`**。按"组间独立命中"推，窗口内命中数应近似 `Poisson(0.18)`，
+出现 4 次的概率约 **4e-5** —— **与"反复恰好 4"不相容**。两种读法都待判：
+**(a)** 确实每次都恰好 4 个组各中 1 条；**(b)** 日志窗口并非 32 组，则上式需重算。
+
+判决命令（一条，用最长的 run）：
+
+```bash
+grep -o "'reward': [0-9.]*" logs/rl/IandS-rl300/rl.log | sort | uniq -c
+```
+
+⟹ 只出现 `0.0` 与 `0.03125` = 读法 (a)；出现 `0.0156` / `0.0625` 等中间值 = 窗口口径要重算。
+**在核清之前不要对外引用"每步恰好 4 命中"这个说法。**
 
 ---
 
