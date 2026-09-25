@@ -29,6 +29,13 @@ SFT_EXP_ID="${SFT_EXP_ID:-${DOMAIN}-run0}"           # 从哪个 SFT 实验接�
 MODEL_PATH="${MODEL_PATH:-outputs/${SFT_EXP_ID}/final_checkpoint}"
 RUN_TAG="${RUN_TAG:-rl0}"                            # rl0 = GRPO 锚点（rule 奖励 + ref 模型）
 
+# 🔴🔴 `USE_LORA` **必须在这里就归一化** —— 下面的 `LORA_SUFFIX` 要用它，
+#     而它原本的归一化在文件后半（LoRA 段）。脚本开头是 `set -u` ⟹ **不传该变量时必崩**：
+#     [实测] 2026-09-25 云端 `rl_run0.sh: line 36: USE_LORA: unbound variable`。
+#     ⚠️ 此前一直没暴露，是因为历次冒烟都**显式传了** `USE_LORA=True` ⟹ "不传"这条默认路径从未被测到
+#     （与 `AUTO_COMMIT` 是同一种测试盲区）。同类体检脚本见 `.workbuddy/memory/2026-09-25.md`。
+USE_LORA="${USE_LORA:-False}"
+
 # ---------------- 实验 ID ----------------
 #   EXP_ID = <域>-<RUN_TAG>      例 IandS-rl0
 #   训练产物 outputs/<EXP_ID>/   日志 logs/rl/<EXP_ID>/   元数据 logs/rl/<EXP_ID>/run.meta.json
@@ -70,6 +77,8 @@ PRECISION="${PRECISION:-bf16}"
 #   grad_ckpt=on               -> 2.59 GiB  ✓
 #   grad_ckpt=on + msave       -> 4.20 GiB  ✗（优化器 step 瞬时峰值超物理）
 # 64 条序列 grad_ckpt=on 也只有 3.74 GiB ✓
+# 🔴 `USE_LORA` 已在文件开头（实验 ID 段之前）归一化 —— 那里 `LORA_SUFFIX` 就要用它；
+#    此处幂等保留，别把开头那条删掉。
 USE_LORA="${USE_LORA:-False}"
 LORA_R="${LORA_R:-32}"
 LORA_ALPHA="${LORA_ALPHA:-64}"
