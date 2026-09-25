@@ -457,15 +457,31 @@ REWARD_TYPE=ranking ... bash rl_run0.sh     # 与 rule 同一 RUN_TAG 体系外�
 **③ 成本（务必先限步，别直接全量）** `[实测，2026-09-25]`
 
 🔴 **步数公式（2026-09-25 用日志进度条 `total=2675` 反推校正 —— 我原写 `len/32`，少了 4×）**：
-`_get_train_sampler` 返回 `RepeatRandomSampler(dataset, num_generations=4)` ⟹ **dataloader 长度 = 数据集行数**
-（每行被重复 4 次、batch 又恰好 4，两者相消），故
+`_get_train_sampler` 返回 `RepeatRandomSampler(dataset, num_generations=G)`（`minionerec_trainer.py:634`）。
+其语义是 **同一个 index 连续重复 G 次**，而 dataloader 的 batch = `TRAIN_BATCH_SIZE`（记 B）
+⟹ **一个 micro-batch 里只有 `B/G` 个"不同 prompt"**（本仓 B=4、G=4 ⟹ **1 个 prompt × 4 份副本**），故
 
 ```
-steps/epoch = ceil(len × NUM_GENERATIONS / (TRAIN_BATCH_SIZE × GRAD_ACC_STEPS)) = ceil(len / 8)
+dataloader 批数/epoch = ceil(len × G / B)        # 「B = G 时恰好等于 len」，不是恒等式
+steps/epoch          = ceil(len × G / (B × GA))  # 本仓 4/4/8 ⟹ ceil(len / 8)
+每优化步序列数        = B × GA = 32
+每优化步不同 prompt   = B × GA / G = 8
+generate 调用数/epoch = ceil(len × G / B)        # B ↑ ⟹ 调用次数 ↓
 ```
 
 ⟹ **每个优化步消耗 8 个 prompt（行）、生成 32 条序列**（**不是 32 行**）。
 校验：`ceil(21,395 / 8) = 2,675`，与日志进度条 `999/2675` **逐位一致**。
+
+🔴 **调 BATCH 的红线：改 B 必须把 GA 等比例反改，保持 `B × GA` = 32 不变**
+⟹ 优化步数不变（仍 2,675）、**有效 batch 不变** ⟹ s/step 可跨配置直接比、LR 不用重调、结果同口径。
+只加 B 不动 GA = 有效 batch 32 → 64 ⟹ 优化变了、LR(1e-5) 需重调，与既有计划不可比。
+
+**依据**：`[实测]` 4090D 上 GPU util 仅 **27%**、显存 9.9 / 24.5 GB ⟹ 瓶颈既不是显存也不是算力，
+而是**每次 `generate()` 调用的固定开销**；B ↑ / GA ↓ 正是摊薄它的手段。
+基线 **3.17 s/step**（B=4 / GA=8）；改成 `TRAIN_BATCH_SIZE=16 GRAD_ACC_STEPS=2` 后，
+因**步数不变**，读 tqdm 的 s/it 即可判决（< 3.17 才算赢，否则回退）。
+⚠️ 约束 `TRAIN_BATCH_SIZE % NUM_GENERATIONS == 0`（`rl_run0.sh:189` 已校验，16 % 4 = 0 ✓）。
+⚠️ 本项提速为 `[推断]`（未实测），以起跑后 1 分钟的实测 s/it 为准。
 
 ```
 训练数据 = 270,432（208,999 SidDataset + 51,433 RLTitle2Sid + 10,000 RLSeqTitle2Sid）
