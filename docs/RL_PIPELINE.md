@@ -738,13 +738,31 @@ advantage=0）——"大家都对一半" GRPO 推不动；rule 的均匀情况�
 （`sync_ref_model=False` ⟹ ref = 启动时加载的模型）；且 HR@50 反而 −5%（0.0862→0.0818）、
 NDCG@50 −3% ⟹ 第二轮在**尾部**有轻微损害，方向与"KL 参考点漂移"一致。
 
-**🏁 阶段 0 收口结论**：四个 run 全部落在锚点 ±0.5σ 内（0.0342 / 0.0330 / 0.0328 / 0.0332），
-系统性排除了 ①奖励稀疏（partial 已修，密度 13%→50%）②奖励形状（0.3/0.6/1.0 档位）
-③训练预算（再吃一遍同样数据）。
-⟹ 剩下的解释是**RL 信号与 SFT 监督重叠**：rule/partial 的奖励都派生自 SFT 已用 CE 优化过的
-同一批"用户→下一条"，GRPO 无新信息可加，只是扰动（KL 动了 10 倍、HR 不动）。
-⟹ **RL 阶段收口**。如重启，先解决"信号与 SFT 不同源"——奖励改用 SFT 没见过的信号源
-（检索侧 top-K 命中/排序、多样性、时效性、或留出序列级指标），再谈算力与 epoch。
+**🏁 收口结论（2026-09-26 01:15 修正版）**：四个 run 全部落在锚点 ±0.5σ 内
+（0.0342 / 0.0330 / 0.0328 / 0.0332），系统性排除了 ①奖励稀疏（partial 已修，密度 13%→50%）
+②奖励形状（0.3/0.6/1.0 档位）③训练预算（再吃一遍同样数据）。
+
+🔴 **⚠️ 我曾在此写成"RL 信号与 SFT 监督重叠是定案根因"——写重了，已撤回**。用户指出
+**MiniOneRec 里 GRPO 是验证过有效的**；核对原版 `rl.sh`（就在本地仓库，IandS 域）后发现
+**我们从未复现过它的配置**：
+
+| 项 | 原版 rl.sh（验证有效） | 我们的 u5k* |
+|---|---|---|
+| reward_type | **`ranking`**（rule + 组内 rank 负分：组内一旦有命中，未命中 beam 按名次吃**负分**） | rule / partial |
+| NUM_GENERATIONS | **16** | 4 |
+| train_batch × GA | 64 × 2（**8 卡**） | 16 × 2（1 卡） |
+| SYNC_REF_MODEL | **True**（ref 定期向策略同步） | False（ref 冻结在 SFT） |
+| NUM_TRAIN_EPOCHS | 2 | 1~2 |
+| lr / beta / temperature / beam_search / 域 | 1e-5 / 1e-3 / 1.0 / True / IandS | **相同** ✓ |
+
+⟹ 四连平的正确表述：**在缩小版配置（1 卡、G=4、rule/partial、冻结 ref、5k 子集）下无增益**，
+"信号与 SFT 重叠"只是嫌疑之一。**最可能翻转结果的两个未对齐项**：
+① `reward_type=ranking` —— `ndcg_rule_reward` 在 rl.py 里**已实现**，一行 env 可试；
+   组内一旦有命中就有方差（无 partial 的"全 0.3 无方差"死角），且直接惩罚差 beam；
+② `G=16` —— 组内含正例概率 ≈ 1-(1-p)^G，4→16 约 4×（rl.py 默认就是 16，我们为显存降的）。
+对齐实验（建议过夜）：`REWARD_TYPE=ranking NUM_GENERATIONS=16 TRAIN_BATCH_SIZE=32
+GRAD_ACC_STEPS=4 SYNC_REF_MODEL=True NUM_TRAIN_EPOCHS=2`
+（≈2,552 步/epoch × 2；显存与吞吐需按 §6.8③ 模型先小步验证）。
 
 **断点续训（`RESUME=`）**
 
