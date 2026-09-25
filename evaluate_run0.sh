@@ -222,6 +222,19 @@ echo ""
 echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SECONDS}s"
 
 # ---------------- 落盘版本元数据 + 指标（不动 calc.py 的口径，只在外层解析） ----------------
+# 🔴 `base_model_has_sid_token_map` 的判据（2026-09-25 修正）
+#    `sft.py:372` 把 `sid_token_map.json` 写在 **run 根目录**（`output_dir`），**不在 `final_checkpoint/` 里**；
+#    而 `MODEL_PATH` 指的就是 `<run 根>/final_checkpoint`（见本文件 :49 的 EXP_ID 反推）。
+#    原写法判 `${MODEL_PATH}/sid_token_map.json` ⟹ **恒为 false** ⟹ 汇总表每一行都被打上「非训练产物」
+#    （含 `IandS-all` 这种货真价实的训练产物）。
+#    ⟹ 改为查 **run 根**；并补一条 tokenizer 判据，覆盖 RL 产物（`rl.py` 不写 `sid_token_map.json`）。
+_SID_MAP=false
+if [ -f "${MODEL_PATH}/sid_token_map.json" ] || [ -f "${MODEL_PATH%/*}/sid_token_map.json" ]; then
+  _SID_MAP=true
+elif [ -f "${MODEL_PATH}/tokenizer.json" ] && grep -q '<a_0>' "${MODEL_PATH}/tokenizer.json"; then
+  _SID_MAP=true
+fi
+
 "${PY}" scripts/sft/eval_report.py meta --out "${META_JSON}" \
   --set "exp_id=${EXP_ID}" \
   --set "domain=${DOMAIN}" \
@@ -229,7 +242,7 @@ echo "[timing] 推理(evaluate.py) ${EVAL_SECONDS}s   指标(calc.py) ${CALC_SEC
   --set "prompt_format=${PROMPT_FMT}" \
   --set "prompt_templates_source=${PROMPT_SRC}" \
   --set "base_model=${MODEL_PATH}" \
-  --set "base_model_has_sid_token_map=$([ -f "${MODEL_PATH}/sid_token_map.json" ] && echo true || echo false)" \
+  --set "base_model_has_sid_token_map=${_SID_MAP}" \
   --set "registered_at_eval=$([ -n "${SID_VOCAB_PATH}" ] && echo true || echo false)" \
   --set "test_file=${TEST_FILE}" \
   --set "info_file=${INFO_FILE}" \
