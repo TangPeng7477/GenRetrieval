@@ -622,11 +622,9 @@ C. 连续两次 __call__ 后 count=2 ⟹ 每步重建即归零
 `final_checkpoint`，与 `IandS-all` 的 `HR@10 = 0.0356` 比。**长跑建议直接 `TEST_DURING_TRAINING=False`**
 （既省掉每步的 beam-10 生成，又不损失任何有效信息）。
 
-**⑹ ⚠️ 未解释：约束解码的第 0 步偶发失效（`No valid tokens found for hash_key [17] at step 1`）**
+**⑹ ✅ 已结案：约束解码吐违规 token（`No valid tokens found for hash_key [17] at step 1`）**
 
-`LogitProcessor.py:59` 的告警，含义是「该前缀在 `hash_dict` 里查不到允许的下一 token，回退为强制 EOS」。
-
-**先排除了映射侧的问题**（本机离线实测，用真实 tokenizer + `item_info.txt` 复现 trainer 的构建逻辑）：
+**先排除映射侧**（本机离线实测，用真实 tokenizer + `item_info.txt` 复现 trainer 的构建逻辑）：
 
 | 检查 | 结果 |
 |---|---|
@@ -634,20 +632,69 @@ C. 连续两次 __call__ 后 count=2 ⟹ 每步重建即归零
 | 前缀键 `'151644-77091-198'` | **存在** ✓ |
 | 该键允许的 token | 恰好 **256** 个，id 范围 **[151669, 151924]** = `<a_*>` 全集 ✓ |
 | token id **17** 是否在其中 | **否** ✗ |
-| 四路 RL prompt（`seq2sid`/`title2sid`/`text2sid`/`seqtitle2sid`）末 3 token | **全部** `[151644, 77091, 198]` ✓ |
+| 四路 RL prompt 末 3 token | **全部** `[151644, 77091, 198]` ✓ |
+| `item_info.txt` 25,847 行 | 全部 7 token、前缀齐、第 4 token 全在 a 码区间 ✓ |
 
-⟹ **`hash_key [17]` 说明解码第 0 步产生了一个 `<a_*>` 之外的普通 token（id 17）**，
-而第 0 步的 mask 在数学上只允许 151669–151924 ⟹ **mask 在第 0 步没有生效**。
+**再排除"prompt 结尾不对"**：完整日志里 **`at step 0` 的告警 = 0 条**
+（step1×65 / step2×14 / step3×4 / step4×4，共 87 条）⟹ 第 0 步的 key 全部合法。
+且违规 key 是 `[17][16][11][10][15][14][0][1][9][7][13][12][8]` —— **13 个值全在 [0,18)**，
+**每次以完全相同的顺序重复** ⟹ 这是**位置型索引**（tie-break）的特征，不是采样出来的 token。
 
-🔴 **我无法从代码阅读定出机制**（已排除：前缀不匹配、`prefix_index` 错、`hash_dict` 覆盖不足、
-四路模板结尾不同、`count` 未重置）。**这是一条开放问题，别当已解释。**
-已知的事实只有两条：① 告警出现在 `count==1`（第 2 个解码步）；② 观测到 12 个**不同**的 id
-（0,1,8–17），说明不是单一 token 的孤立事件，但**发生频次无法从日志统计**（Python `warnings` 按
-(message, location) 去重，只打第一次）。
+**🔴 真正的机制（HF beam-sampler × 逐步约束的结构性冲突）：**
 
-**下一步的定位手段（按成本排序）**：① `TEST_DURING_TRAINING=False` 重跑，看告警是否消失
-（区分是哪条路径）；② 在 `LogitProcessor.__call__` 里对 `count==0` 临时打印
-`sent[-3:]` 与 `len(prefix_allowed_tokens)`，直接看第 0 步的 mask 是否为空。
+`transformers/generation/utils.py::_get_top_k_continuations` 每步会要
+`beams_to_keep = max(2, 1+n_eos) * num_beams` 张**互不重复**的票：
+
+```python
+# do_sample=True（BEAM_SAMPLE）
+topk_indices = torch.multinomial(softmax(accumulated_log_probs),
+                                 num_samples=beams_to_keep, replacement=False)
+# do_sample=False（BEAM_SEARCH）同理，torch.topk(..., k=beams_to_keep)
+```
+
+而 SID 的 Trie 约束在 **`c` / `\n` / `eos` 这几位只放行 1 个 token** ⟹
+**支持集 < 票数** ⟹ `torch.multinomial` 只能拿**零概率位置凑数**。实测这些凑数位置的
+**扁平索引就是 `0..k-1`**（= beam0 的 token `0..k-1`），落地后正是日志里那批 ASCII/数字 id：
+
+| 配置 | 实测逃逸 id |
+|---|---|
+| `num_beams=10`（k=20，测试路径） | `{1,3,7,8,9,15,16,17,18,19}` |
+| `num_beams=4`（k=8，训练路径） | `{1,3,4,7}`（⊂[0,8)） |
+
+正常情况下这些凑数条目分数是 `-inf`、排名垫底、**进不了 beam**（实测三组配置"垃圾=0"）。
+🔴 **但只要某些 beam 的合法项分数本身不是有限值**（`#finite < num_beams`），
+`_get_running_beams_for_next_iteration` 的 `topk(k=num_beams)` 就**必须**保留它们
+⟹ 位置型垃圾 token 被写进序列 ⟹ 下一步 `hash_key` 失效 ⟹ 告警刷屏 + 生成被污染。
+
+**判决式验证**（真实 tokenizer + `hash_dict` + 微型模型，注入"合法码分数非有限"复刻云端）：
+
+| 判据 | 旧版 | 新版 |
+|---|---|---|
+| 正常情形生成序列**逐位一致** | — | **True** ✅ |
+| 合法码分数非有限 ⟹ 违规候选 | **30/30** | **0/30** ✅ |
+| 同场景 `do_sample=True` | 直接抛 `probability tensor contains inf/nan` | 正常 ✅ |
+
+（旧版在"整行非有限"时崩溃，反证云端必然是**部分**行非有限 —— 与"没有崩"一致。）
+
+**修复（两处，零回归）：**
+
+1. **`LogitProcessor.py`** —— 合法项分数若为非有限（`-inf`/NaN），兜底成 `row_max - 1000`
+   （**有限值**），保证**每个 beam 至少贡献 1 张有限票** ⟹ `#finite ≥ num_beams` 恒成立
+   ⟹ 凑数条目永不进 beam。不允许位仍是 `-inf`（排名绝对垫底，不引入新风险）。
+   ⚠️ 分数正常时**逐位不改**（上表判据 1 已证）⟹ SFT/评估结果不变。
+   顺带：改为**直接返回 mask**（与旧 `scores+mask` 等价）、fallback 的 eos 位补 `isfinite` 兜底、
+   新增「`cur_len` 回退即重置 `count`」的实例复用自愈。
+2. **`minionerec_trainer.py`** —— 4 处 `generate()` 全加 **`use_model_defaults=False`**，
+   `test_generation_config` 显式补 `temperature=1.0 / top_k=None / top_p=None`。
+   原因：HF 的默认值回填规则（「传入值 == `GenerationConfig` 全局默认 且 基座值 != 全局默认 ⟹ 取基座值」）
+   使 `do_sample=False`（== 全局默认）被 Qwen3 基座的 `true` 覆盖（日志原样打出覆盖清单），
+   且 `Temperature/TopK/TopP` 三个 warper 会被**追加在约束处理器之后**（`_get_logits_processor`
+   里 warper 是在 merge 之后 append）。这与 **`evaluate.py` 早已修过的坑同源**
+   —— 修复后测试路径恢复为**确定性 `BEAM_SEARCH`**，训练路径保持 `do_sample=True`（探索所需）但不再带 warper。
+
+🔴 **通用红线**：任何"逐步约束"都必须保证「每步允许集 ≥ HF 需要的候选数（`2×num_beams`）」，
+或保证"合法项分数恒有限"；否则 `multinomial`/`topk` 的凑数行为会**静默绕过约束**。
+排查一行命令：`grep -o "at step [0-9]*" <log> | sort | uniq -c`（**`at step 0` 为 0 ⟹ 掩码在第 0 步是对的**）。
 
 **⑺ 🔴 内部 `evaluate()` 单次 ≈ 6 小时 —— 它才是长跑的主导成本（我原估 30 min，差 12×）**
 

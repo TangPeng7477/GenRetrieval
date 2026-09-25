@@ -573,11 +573,28 @@ class ReReTrainer(Trainer):
         for key in self.hash_dict.keys():
             self.hash_dict[key] = list(self.hash_dict[key])
 
+        # 🔴 [本项目新增] 显式钉死 temperature / top_k / top_p（2026-09-25）。
+        #    HF 的 `_prepare_generation_config` 有"默认值回填"规则：
+        #      「传入值 == GenerationConfig 的全局默认值 且 基座值 != 全局默认值 ⟹ 取基座值」
+        #    而 `do_sample=False` / `temperature=1.0` / `top_k=None` 恰好**都是全局默认值**
+        #    ⟹ 只传它们等于没传：Qwen3 基座的 `generation_config.json`（do_sample=true,
+        #    temperature=0.6, top_k=20, top_p=0.95）会把它们全部覆盖掉。
+        #    [实测] 云端日志原样打出：
+        #      `generation_config` default values have been modified to match model-specific
+        #      defaults: {'do_sample': True, 'temperature': 0.6, 'top_k': 20, 'top_p': 0.95}
+        #    ⟹ 测试路径**并非**预期的确定性 BEAM_SEARCH，而是 BEAM_SAMPLE（含随机采样），
+        #      且 Temperature/TopK/TopP 三个 warper 会被**追加在约束处理器之后**
+        #      （`utils._get_logits_processor` 里 warper 是在 merge 之后 append 的）。
+        #    根治办法与 `evaluate.py` 完全一致：调用 generate 时传 `use_model_defaults=False`，
+        #    让显式参数真正生效（见下方两处 generate 调用）。
         self.test_generation_config = GenerationConfig(max_new_tokens=self.max_completion_length,
                                                             length_penalty=self.length_penalty,
                                                             num_beams=self.test_beam,
                                                             num_return_sequences=self.test_beam,
                                                             do_sample=False,
+                                                            temperature=1.0,
+                                                            top_k=None,
+                                                            top_p=None,
                                                             pad_token_id=self.processing_class.pad_token_id,
                                                             eos_token_id=self.processing_class.eos_token_id,)
 
@@ -770,6 +787,10 @@ class ReReTrainer(Trainer):
                         test_completion_ids = unwrapped_model.generate(
                             dedup_prompt_ids, attention_mask=dedup_prompt_mask, generation_config=self.test_generation_config,
                             logits_processor=self.test_lp_list,
+                            # 🔴 [本项目新增] 关掉"用基座默认值回填"，否则上面的 do_sample=False /
+                            #    temperature=1.0 / top_k=None 都会被 Qwen3 的 generation_config.json
+                            #    覆盖掉（与 evaluate.py 完全同款修复，见该文件同名 kwarg 的注释）。
+                            use_model_defaults=False,
                         )
                     
                     # print(f"test_completion_ids: {test_completion_ids.shape}")
@@ -806,6 +827,8 @@ class ReReTrainer(Trainer):
                     prompt_completion_ids = unwrapped_model.generate(
                         dedup_prompt_ids, attention_mask=dedup_prompt_mask, generation_config=self.generation_config,
                         logits_processor=self.logits_processor,
+                        # 🔴 [本项目新增] 让显式 temperature/top_k/top_p 生效（否则同样被基座覆盖）。
+                        use_model_defaults=False,
                     )
                     # print(f"prompt_ids: {prompt_ids.shape}")
                     # print(f"prompt_completion_ids: {prompt_completion_ids.shape}")
@@ -825,6 +848,7 @@ class ReReTrainer(Trainer):
                         prompt_completion_ids = unwrapped_model.generate(
                             extended_prompt_ids, attention_mask=extended_prompt_mask, generation_config=self.generation_config,
                             logits_processor=self.logits_processor,
+                            use_model_defaults=False,   # 🔴 同款：让显式采样参数生效
                         )
                         prompt_length = prompt_ids.size(1)
                         extended_completion_ids = prompt_completion_ids[:, prompt_length:]
@@ -870,6 +894,7 @@ class ReReTrainer(Trainer):
                         prompt_completion_ids = unwrapped_model.generate(
                             prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config,
                             logits_processor=self.logits_processor,
+                            use_model_defaults=False,   # 🔴 同款：让显式采样参数生效
                         )
 
             if self.add_gt:
