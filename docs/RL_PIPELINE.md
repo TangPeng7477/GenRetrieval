@@ -692,6 +692,19 @@ trainer_state 也 FileNotFound）：
 🔴 **操作红线**：**eval 跑完才存 ckpt** ⟹ 在 eval 窗口里 kill，丢的是**那个 step 的断点**；
 能续到的最近断点是**上一次**触发点的，不是当前这个。
 
+🔴 **别急着判「断点丢失」——先 `pgrep -af rl.py`**：进程还活着、只是**卡在 eval 里**的话，
+**eval 一跑完它会自己把 ckpt 写出来**，断点只是"还没轮到写"而不是"没了"。
+（`[实测]` 本轮：`ls outputs/IandS-u5k/checkpoint-999/` 报 No such file、目录也确实是空的，
+但 pid 25867 仍在跑 `--eval_step 999` ⟹ 断点待写。我上一轮没查进程就下了"只能重跑"的结论，是错的。）
+⟹ **kill 的时机**：想保住 ckpt-999 又想避开下一次 eval（step 1998，全量又是 ~2.5-3.6 h），
+就**一看到 `checkpoint-999` 出现在磁盘上立刻 kill**；
+`save_total_limit=3` 保证 ckpt-999 在 ckpt-1998 写出之前**不会被轮换掉**
+⟹ 即使 kill 发生在 eval#2 期间也只丢 1998，**999 仍在**，续训照样可用。
+
+**执行保险 vs 事后续训的取舍**：若当前 eval 剩余时间 `R`，则
+「等它写完 ckpt-999 再续」= `R + 1,676 步 ≈ R + 1.5 h`；「立刻 kill 干净重跑」= 2,675 步 ≈ 2.4 h
+⟹ **`R < ~0.9 h` 就等，否则立刻 kill**。（`R` 直接从 eval 进度条的 `[elapsed<remaining]` 读。）
+
 **给长跑买保险**：`SAVE_STEPS=999 SAVE_TOTAL_LIMIT=1` ⟹ 只保留**最新**一个断点（≈6 GB，
 不会像 `limit=3` 那样累积到 ~18 GB），随时 `RESUME=True` 续上。
 （`EVAL_STEP` 默认 `0.0999` 是**比例**、不是"关" ⟹ 默认仍会在 ~10% 总步数处做一次内部 eval。
