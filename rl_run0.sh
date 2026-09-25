@@ -25,8 +25,24 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 DOMAIN="${DOMAIN:-IandS}"                            # IandS | VG
 CATEGORY="${CATEGORY:-Industrial_and_Scientific}"    # category_dict 的键（全名，不是域代号）
 RL_DIR="${RL_DIR:-data/Amazon23/${DOMAIN}/sft}"      # RL 复用 SFT 阶段的产物目录
+# 🔴 先记下调用方是否**显式**传了这两个 —— 必须在下面的默认赋值**之前**取，
+#    否则 `${VAR+1}` 恒为 "1"（已赋值），反推永远不执行。
+#    `${VAR+1}` = 变量已设置则为 "1"（显式传空也算已设置），`set -u` 下安全。
+_SFT_EXP_ID_GIVEN="${SFT_EXP_ID+1}"
+_MODEL_PATH_GIVEN="${MODEL_PATH+1}"
+
 SFT_EXP_ID="${SFT_EXP_ID:-${DOMAIN}-run0}"           # 从哪个 SFT 实验接着训
 MODEL_PATH="${MODEL_PATH:-outputs/${SFT_EXP_ID}/final_checkpoint}"
+
+# 🔴 回显与 meta 的 `sft_exp_id` 必须反映**真实来源**。
+#    若调用方只显式给了 `MODEL_PATH`（很常见：`MODEL_PATH=outputs/IandS-all/final_checkpoint ...`），
+#    默认的 `<域>-run0` 往往根本没有产物 ⟹ 日志会打出
+#      `SFT source : IandS-run0  ->  outputs/IandS-all/final_checkpoint`
+#    这种自相矛盾的行，且 **meta 把出版版本记成 IandS-run0**（provenance 错）。
+#    [实测] 2026-09-25。反推方式与 `evaluate_run0.sh:49` 一致，别另写一套。
+if [ -z "${_SFT_EXP_ID_GIVEN}" ] && [ -n "${_MODEL_PATH_GIVEN}" ]; then
+  SFT_EXP_ID="$(basename "$(dirname "${MODEL_PATH}")")"
+fi
 RUN_TAG="${RUN_TAG:-rl0}"                            # rl0 = GRPO 锚点（rule 奖励 + ref 模型）
 
 # 🔴🔴 `USE_LORA` **必须在这里就归一化** —— 下面的 `LORA_SUFFIX` 要用它，

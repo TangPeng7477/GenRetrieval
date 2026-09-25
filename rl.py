@@ -13,6 +13,11 @@ from sasrec import SASRec
 #    fire 会把命令行 `a,b,c` 解析成 **tuple**，直接 str(v).split(",") 会得到脏元素。
 #    这个 bug 在 SFT 侧实测踩过（见 sft.py:147 的注释），RL 侧新增的 LoRA 参数同源。
 from sft import parse_csv_list
+# 🔴 提示词模板真源（与 `data.py:17` 同款导入）。本文件的**前置护栏**要用
+#    `pt.response_prefix()` / `pt.source()`；此前漏了这一行 ⟹ `train()` 一进来就
+#    `NameError: name 'pt' is not defined`（[实测] 2026-09-25 云端，命令行参数全解析完才炸）。
+#    注意：`data.py` 里导入过 `pt` 是**另一个模块的命名空间**，本文件不会继承。
+import prompt_templates as pt
 from fire import Fire
 import pickle
 import math
