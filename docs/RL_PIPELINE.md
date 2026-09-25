@@ -464,9 +464,13 @@ bash rl_run0.sh
 #  -> outputs/IandS-rl0/
 ```
 
-- `MAX_STEPS=300` 把训练钉在 ~15 min；`EVAL_STEP=0.5` ⟹ 只 eval 2 次（否则按 §6.8③ 光 eval 就 ~5 h）。
-- 🔴 训练内 `HR@k` 是 **beam=10 的训练内搜索**——**只能看本 run 内部的相对轨迹**，
-  与 `evaluate_run0.sh` 的 beam=50 全量、**以及 baseline/ 全库排序，三者两两不可横比**。
+- `MAX_STEPS=300` 把训练钉在 ~25 min。
+- 🔴 **别指望 `TEST_DURING_TRAINING` 给 HR 轨迹**（我原先这么写，错了）：它**每步都跑**、样本只有
+  当前 micro-batch 的 **1~4 条** prompt、而且评的是**训练 batch 不是验证集** ⟹ `HR@k` 恒为 0 是必然。
+  `EVAL_STEP` 对该路径**无效**。详见 **§6.10 ⑸**。
+  ⟹ 短跑只需看 `reward` / `reward_std` / `grad_norm` / `kl` 的走势；**要 HR 就走阶段 C 的
+  `evaluate_run0.sh`**（beam=50，与 `IandS-all` 同口径）。
+- ⚠️ 训练内 `HR@k`（beam=10）与 `evaluate_run0.sh`（beam=50）、`baseline/`（全库排序）**三者两两不可横比**。
 
 **阶段 C · 口径对齐评估（这才是判决点）**
 
@@ -598,6 +602,52 @@ B. 测试侧独立实例（nb=10）：1 / 2 prompts -> OK  ✅
 C. 连续两次 __call__ 后 count=2 ⟹ 每步重建即归零
 ```
 ⚠️ **这是"此前从未执行过的代码路径"里藏的第一个 bug，可能不止一个** ⟹ 短跑要盯完整日志。
+
+**⑸ 🔴 `TEST_DURING_TRAINING` 的真实语义：每步都跑，且评的是**训练 batch**（不是验证集）**
+
+读代码（`minionerec_trainer.py:669/753`）后确认三件事，全部与直觉相反：
+
+| 项 | 实际 |
+|---|---|
+| 触发频率 | **每个训练步都跑** —— `rl.py:397` 的 `eval_steps=eval_step` 只写进 `GRPOConfig`，而这个自定义 trainer **从不读 `eval_steps`**（`grep eval_step minionerec_trainer.py` = 空）⟹ **`EVAL_STEP` 对本路径完全无效** |
+| 评测样本 | **当前 micro-batch 的 prompt**（`dedup_prompt` 取自 `prompt_ids`、`dedup_target` 取自该 batch 的 `targets`），**不是** `eval_dataset` |
+| 样本量 | `dedup` 取 `i % num_generations == 0` ⟹ 每步约 **1~4 条** prompt |
+
+🔴 后果：**`HR@3/5/10/20` 几乎必然恒为 0**（`HR@10≈0.035 × 4 prompt` ⟹ 期望命中 0.14 次），
+**它不是验证集指标、也没有轨迹可言**。
+⟹ ⚠️ **本文件 §6.9 里"用 `EVAL_STEP=0.5` 拿到 2 次 HR 轨迹"的说法是错的**（我当时的假设未经验证）——
+`TEST_DURING_TRAINING` 目前**不能**用来判断 RL 是否在学。
+
+**RL 增益的唯一合法判据仍然是 §6.9 阶段 C**：跑完用 `evaluate_run0.sh`（beam=50、全量/`MAX_SAMPLES`）评
+`final_checkpoint`，与 `IandS-all` 的 `HR@10 = 0.0356` 比。**长跑建议直接 `TEST_DURING_TRAINING=False`**
+（既省掉每步的 beam-10 生成，又不损失任何有效信息）。
+
+**⑹ ⚠️ 未解释：约束解码的第 0 步偶发失效（`No valid tokens found for hash_key [17] at step 1`）**
+
+`LogitProcessor.py:59` 的告警，含义是「该前缀在 `hash_dict` 里查不到允许的下一 token，回退为强制 EOS」。
+
+**先排除了映射侧的问题**（本机离线实测，用真实 tokenizer + `item_info.txt` 复现 trainer 的构建逻辑）：
+
+| 检查 | 结果 |
+|---|---|
+| `hash_dict` 键数 | 68,442 |
+| 前缀键 `'151644-77091-198'` | **存在** ✓ |
+| 该键允许的 token | 恰好 **256** 个，id 范围 **[151669, 151924]** = `<a_*>` 全集 ✓ |
+| token id **17** 是否在其中 | **否** ✗ |
+| 四路 RL prompt（`seq2sid`/`title2sid`/`text2sid`/`seqtitle2sid`）末 3 token | **全部** `[151644, 77091, 198]` ✓ |
+
+⟹ **`hash_key [17]` 说明解码第 0 步产生了一个 `<a_*>` 之外的普通 token（id 17）**，
+而第 0 步的 mask 在数学上只允许 151669–151924 ⟹ **mask 在第 0 步没有生效**。
+
+🔴 **我无法从代码阅读定出机制**（已排除：前缀不匹配、`prefix_index` 错、`hash_dict` 覆盖不足、
+四路模板结尾不同、`count` 未重置）。**这是一条开放问题，别当已解释。**
+已知的事实只有两条：① 告警出现在 `count==1`（第 2 个解码步）；② 观测到 12 个**不同**的 id
+（0,1,8–17），说明不是单一 token 的孤立事件，但**发生频次无法从日志统计**（Python `warnings` 按
+(message, location) 去重，只打第一次）。
+
+**下一步的定位手段（按成本排序）**：① `TEST_DURING_TRAINING=False` 重跑，看告警是否消失
+（区分是哪条路径）；② 在 `LogitProcessor.__call__` 里对 `count==0` 临时打印
+`sent[-3:]` 与 `len(prefix_allowed_tokens)`，直接看第 0 步的 mask 是否为空。
 
 ---
 
