@@ -764,6 +764,27 @@ NDCG@50 −3% ⟹ 第二轮在**尾部**有轻微损害，方向与"KL 参考点
 GRAD_ACC_STEPS=4 SYNC_REF_MODEL=True NUM_TRAIN_EPOCHS=2`
 （≈2,552 步/epoch × 2；显存与吞吐需按 §6.8③ 模型先小步验证）。
 
+## 6.9.1 明日实验矩阵（2026-09-25 定稿；统一判据 = HR@10 vs 0.0342，同 5,000 行）
+
+**背景**：原版验证有效的前提（`PROJECT_DOCUMENTATION.md:332`）——2 轮 RL HR@10 9.3%→10.9%（+17%）
+是在 **3,686 商品**的空间；我们 IandS 是 **25,847 商品（7×）**，采样命中率 ~0.4% ⟹ 组信号先天稀薄。
+原版文档自己写了："中等（~50K items）→ HR@10 ~1-5%，搜索空间增大，**需要更大模型或更多生成数**"。
+
+| # | 改动 | 动机 | 成本 | 状态 |
+|---|---|---|---|---|
+| R1 | `REWARD_TYPE=ranking`（其余同 u5k） | 纯 A/B 对齐原版验证配置；组内含命中即有方差（无死角） | 1 epoch ~50 min | **明天先跑** |
+| R2 | R1 + `NUM_GENERATIONS=16`（B=32/GA=4 保 32 序列/步） | 组内含正例概率 ≈1-(1-p)^G，4→16 约 4×；SIDReasoner 也用 rollout 16 | ~2-3× R1 | R1 平了再跑 |
+| R3 | **NLL/困惑度连续奖励**（LatentR3, arXiv 2505.19092） | 用 target SID 在策略下的 teacher-forced NLL 当连续奖励——**每条样本都有值**，彻底免采样命中；该文还把 group-relative 改 batch-relative | 需实现（½天） | R1/R2 平了做 |
+| R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
+
+**外部证据**：
+- **SIDReasoner**（arXiv 2603.23183）：GRPO rollout **16**、KL 1e-3、lr 5e-7、format+task 双奖励（λ=0.1）、
+  batch 256；其 **Industrial R@10=0.1031**（TIGER 0.0763 / LC-Rec 0.0876）—— 同域参考上限。
+- **LatentR3**（arXiv 2505.19092）：0/1 奖励计算贵且稀疏 ⟹ **用 target 的困惑度做连续奖励** +
+  batch-relative advantage（连续奖励下 group-relative 会给全低质量组正优势）。与我们四连平的病灶一致。
+- **JD RecSys'25**（Adaptive Loss Balancing）：工业 ranker 当 RM 有曝光偏置 ⟹ 奖励噪声要自适应加权 —— 远期。
+- **OneRec/快手**：reward system 按业务多目标定义（快手把 reward 设计下放给业务团队）—— 收口后的正确方向。
+
 **断点续训（`RESUME=`）**
 
 `rl_run0.sh:141/297` 支持 `RESUME=<checkpoint 目录>`，透传 `--resume_from_checkpoint`：
