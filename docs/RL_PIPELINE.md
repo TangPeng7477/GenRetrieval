@@ -778,8 +778,17 @@ GRAD_ACC_STEPS=4 SYNC_REF_MODEL=True NUM_TRAIN_EPOCHS=2`
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：
-- **SIDReasoner**（arXiv 2603.23183）：GRPO rollout **16**、KL 1e-3、lr 5e-7、format+task 双奖励（λ=0.1）、
-  batch 256；其 **Industrial R@10=0.1031**（TIGER 0.0763 / LC-Rec 0.0876）—— 同域参考上限。
+- ~~SIDReasoner Industrial R@10=0.1031~~ **[2026-09-26 核验作废]**：该数字来自搜索摘要的**表格错位**
+    （0.1031 是其 Games R@10）。逐字核验原文 Table 2：**Industrial 列 = TIGER R@10 0.1325 /
+    LC-Rec 0.1330 / SIDReasoner 0.1438**。
+  🔴 **更关键：它的 "Industrial" 不是我们的 IandS** —— Table 1：**3,686 items / 45,325 交互 /
+    4,533 test**，5-core + 滑窗 10 + **时间 8:1:1**（非 LOO），骨干 **Qwen3-1.7B** 全参；
+    而我们 IandS = **25,848 items / LOO / 0.6B**（与 TIGER/LC-Rec 7/8 同类目同构，见 EVAL_PROTOCOL）。
+    ⟹ 数字不可横比；我们可横比的锚点仍是 **TIGER 自带 sasrec 0.0422 vs 我们 sasrec 0.0395（同梯队）**。
+  💡 **意外发现**：MiniOneRec 原版文档说其 GRPO 在 "**3,686 个商品**" —— 与 SIDReasoner 的 Industrial
+    商品数一致 ⟹ **被验证有效的 GRPO regime 全在 ~3.7K 商品的小空间**；我们 25,848 的差距来自
+    **数据预处理**（保留 item 远多于 5-core），不在 RL 本身。
+    ⟹ 新增对齐选项 **R5：把 IandS 预处理对齐到 5-core（≈3.7K 商品）再跑 RL** —— 直接落回已验证 regime。
 - **LatentR3**（arXiv 2505.19092）：0/1 奖励计算贵且稀疏 ⟹ **用 target 的困惑度做连续奖励** +
   batch-relative advantage（连续奖励下 group-relative 会给全低质量组正优势）。与我们四连平的病灶一致。
 - **JD RecSys'25**（Adaptive Loss Balancing）：工业 ranker 当 RM 有曝光偏置 ⟹ 奖励噪声要自适应加权 —— 远期。
