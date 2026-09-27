@@ -838,12 +838,15 @@ LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch �
 - 权重：`models/sasrec_IandS_cf.pt`（**6.7 MB**，`SASRecNet(hidden=64, layers=2, heads=2, maxlen=20)` 1.76M）。
   ⚠️ 下面两行是 **v2（根 sasrec.py，已被 v3 取代）** 的旧记录，保留作版本史：best epoch 7
   valid HR@10 = 0.0192 / NDCG@10 = 0.0115（全库排序、未 mask、文件头 5,000 行）。
-- 对照：baseline 那份 `baseline/results/IandS/sasrec` 是 **HR@10 0.0494 / NDCG@10 0.029**
-  ⟹ 我们这份 **约为其 40%**（但比随机高 ~48×，作奖励模型可用；想要更强需 2 block 架构）。
+- 对照：baseline 那份 `baseline/results/IandS/sasrec` 的真实成绩（**逐字取自其产物**）——
+  `metrics.json`: **best_epoch=5、best_valid_metric=0.0300**（monitor = mask_seen NDCG@10）；
+  该轮 valid（run.log ep5）HR@10 = **0.0506**；**test** HR@10 = **0.0395** / NDCG@10 = **0.0225**。
+  ⚠️ 我此前写的 "0.0494 / 0.029" 是**读错了行**：0.0494 是 run.log **ep9** 的 valid HR、
+  0.0517 是 **ep4** 的（峰值，不是被选中的那一轮）——都不是 baseline 的成绩，已更正。
 - 🔴 两个必须记住的坑（都已修）：
   1. **训练目标必须是全库 softmax CE，不是 1 负例 BCE** —— `[实测]` 同数据同训练量：
      BCE(1 neg) 只有 HR@10 **0.0134**，全库 CE 是 **0.0192**；
-     而 baseline（`baseline/models/seq.py:89` 用 `F.cross_entropy`）是 0.0494。
+     而 baseline（`baseline/models/seq.py:89` 用 `F.cross_entropy`）在同口径下是 0.0506（best ep5）。
      只见过 1 个负例的模型从没学会把另外 2 万多个 item 压下去，全库排序必然崩。
   2. **必须按 valid 指标保存最佳 epoch** —— `[实测]` BCE 版训 25 ep 时 best 在 ep9(0.0134)，
      最后一个 epoch 已过拟合到 **0.0066**（脚本最初只存最后一轮，等于存了最差的）。
@@ -856,7 +859,11 @@ LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch �
 **✅ 2.5× 差距的根因已复现（2026-09-27 下午，v3：改用 baseline 的 `SASRecNet`）**
 
 `[实测]` **best epoch 6：mask_seen valid HR@10 = 0.0513 / NDCG@10 = 0.0300** ——
-与 baseline 那份（HR@10 0.0517 / NDCG@10 0.0300）**逐位重合**。权重 `models/sasrec_IandS_cf.pt`（6.7 MB）。
+与 baseline 的 monitor 值 **逐位相同**（都是 mask_seen NDCG@10 = **0.0300**）；
+valid HR@10 = **0.0513** vs baseline 选中轮 ep5 的 0.0506（+1.4%）。权重 `models/sasrec_IandS_cf.pt`（6.7 MB）。
+**test 集同源对比**（`[实测]`，两者都 mask_seen、n=50,982）：**我 HR@10 0.0402 / NDCG@10 0.0233**
+vs baseline **0.0395 / 0.0225**（+1.9% / +3.3%）⟹ **valid 与 test 两侧都复现**。
+（残余 1~3% 来自 batch 洗牌 RNG 不同：baseline 用 `DataLoader(shuffle=True)`，本脚本用 `torch.randperm`。）
 
 差距由三件事叠加，按贡献排序：
 
