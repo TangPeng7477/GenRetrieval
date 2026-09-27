@@ -112,6 +112,9 @@ def train(    # model/data params
     rl_t3_sample: int = 10000,
     ada_path: str = "",
     cf_path: str = "",
+    # cf_scaled_reward 的权重 λ（仅 sasrec_rule / ranking_cf 用）：reward = rule + λ·z(cf)
+    # 🔴 cf 必须先批内标准化再加权（见 cf_scaled_reward 注释）；λ=0.3 ⟹ 命中 1.0 主导、协同信号辅助
+    cf_weight: float = 0.3,
     sid_index_path: str = "",
     item_meta_path: str = "",
     dapo: bool = False,
@@ -477,7 +480,17 @@ def train(    # model/data params
             predictions = model.logits(seq)               # [B, item_num]
             scores = torch.gather(predictions, 1,  pred.view(-1, 1)).view(-1)
         return scores
-    
+
+    # 🔴 [2026-09-27] cf_reward 是 **target-free** 的连续奖励，单独使用会被 reward hacking
+    #    （`[实测]` u5ks：reward 均值 2.18→3.23（+53%）、末端 KL 0.3、HR@10 不动且 NDCG@10 反降）。
+    #    修法 = 与含 target 的奖励**组合**，且 cf 必须先**批内标准化**再乘权重：
+    #    · TRL 的 advantage = (sum(r) − mean)/std 是在**求和之后**才做（scale_rewards 默认 "group"）
+    #      ⟹ 求和时量级大的函数主导（cf 的 std ~2 vs rule 的 0/1、ndcg 的 ~±0.02）
+    #    · ⚠️ 组内 advantage 对仿射变换**不变** ⟹ 标准化不改变 cf 单独使用时的梯度，
+    #      只在**组合**时决定相对权重 —— 这正是需要的（先标准化再加权，顺序不能反）。
+    def cf_scaled_reward(prompts, completions):
+        s = torch.as_tensor(cf_reward(prompts, completions), dtype=torch.float32)
+        return ((s - s.mean()) / (s.std() + 1e-4) * cf_weight).tolist()
 
 
     if reward_type == "rule":
@@ -490,11 +503,17 @@ def train(    # model/data params
         reward_fun = semantic_reward
     elif reward_type == "sasrec":
         reward_fun = cf_reward
+    elif reward_type == "sasrec_rule":
+        # rule（0/1 命中，target 锚定）+ λ·z(cf)（稠密协同信号）
+        reward_fun = [rule_reward, cf_scaled_reward]
+    elif reward_type == "ranking_cf":
+        # 三项：rule + ndcg（组内名次负分）+ λ·z(cf)
+        reward_fun = [rule_reward, ndcg_rule_reward, cf_scaled_reward]
     elif reward_type == "partial":
         reward_fun = partial_reward
     else:
         raise ValueError(
-            f"reward_type 只接受 rule/ranking/ranking_only/semantic/sasrec/partial，收到 {reward_type!r}"
+            f"reward_type 只接受 rule/ranking/ranking_only/semantic/sasrec/sasrec_rule/ranking_cf/partial，收到 {reward_type!r}"
         )
     
     os.environ['WANDB_PROJECT'] = wandb_project
