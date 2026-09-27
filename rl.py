@@ -224,6 +224,17 @@ def train(    # model/data params
         # Extract semantic_id (first column) from the format: semantic_id \t item_title \t item_id
         item_name = [_.split('\t')[0].strip() for _ in info]
         item2id = {name: i for i, name in enumerate(item_name)}
+        # 🔴 history 元素的**类型随任务变**（`[实测]` 2026-09-27 云端，跑到第 3 步才炸）：
+        #    · T1 `SidDataset`  -> `data.py:380` 用 `history_item_sid` 拼 ⟹ 元素是 **SID**
+        #    · T3 `RLSeqTitle2SidDataset` -> 拼的是**商品标题**（"seqtitle" 任务的语义）
+        #    ⟹ 必须**两种都查**：先按 SID（item2id），再按标题（title2id），都没有才退化为 pad。
+        #    ⚠️ 只用 item2id 时 T3 会 KeyError: 'Supereyes 7 mm ... Camera with LED'；
+        #       只用 title2id 时 T1 会全退化为 pad（打分全废、且**不报错**）。
+        title2id = {}
+        for _i, _line in enumerate(info):
+            _parts = _line.split('\t')
+            if len(_parts) >= 2:
+                title2id.setdefault(_parts[1].strip(), _i)   # 重复标题（1.27%）取第一个 id
 
     sample = -1
 
@@ -444,7 +455,8 @@ def train(    # model/data params
         len_lis = []
         history_ids = []
         for his in history_list:
-            his = [item2id[elm] for elm in his]
+            # 🔴 双查：先 SID（T1）再标题（T3），都没有才用 pad id（不打断 run）。
+            his = [item2id.get(elm.strip(), title2id.get(elm.strip(), item_num)) for elm in his]
             # 🔴 [2026-09-27 修] 原代码只 pad 不截断；SASRec 的位置编码表只有 len_seq 行，
             #    历史超过 len_seq 会在 forward 时形状不匹配而崩。
             #    `[实测]` IandS 的 history 最长 = 20 ⟹ 必然触发（"跑几百步才遇到"的静默坑）。
