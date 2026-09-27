@@ -833,6 +833,25 @@ GRPO 的 `advantage = (r_i − mean_group) / std_group` ⟹ **奖励必须依赖
 LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch 均值做 baseline）——
 改完本质已是 REINFORCE+baseline，不再是标准 GRPO。
 ⟹ **"每条样本都有值" ≠ "有梯度"**，这是选奖励时的第一判据。
+
+**R6 的准备情况（`[实测]` 2026-09-27 本地 3050Ti 训练，脚本 `scripts/rl/train_sasrec_cf.py`）**
+- 权重：`models/sasrec_IandS_cf.pt`（13 MB，`SASRec(hidden=64, state=20, heads=2)` 3.36M 参数），
+  **best epoch 7：valid HR@10 = 0.0192 / NDCG@10 = 0.0115**（全库排序、未 mask）。
+- 对照：baseline 那份 `baseline/results/IandS/sasrec` 是 **HR@10 0.0494 / NDCG@10 0.029**
+  ⟹ 我们这份 **约为其 40%**（但比随机高 ~48×，作奖励模型可用；想要更强需 2 block 架构）。
+- 🔴 两个必须记住的坑（都已修）：
+  1. **训练目标必须是全库 softmax CE，不是 1 负例 BCE** —— `[实测]` 同数据同训练量：
+     BCE(1 neg) 只有 HR@10 **0.0134**，全库 CE 是 **0.0192**；
+     而 baseline（`baseline/models/seq.py:89` 用 `F.cross_entropy`）是 0.0494。
+     只见过 1 个负例的模型从没学会把另外 2 万多个 item 压下去，全库排序必然崩。
+  2. **必须按 valid 指标保存最佳 epoch** —— `[实测]` BCE 版训 25 ep 时 best 在 ep9(0.0134)，
+     最后一个 epoch 已过拟合到 **0.0066**（脚本最初只存最后一轮，等于存了最差的）。
+- 🔴 顺带修掉的 RL 侧隐患：`cf_reward` 原先**只 pad 不截断**，而 IandS 历史**最长 20 > state_size**
+  ⟹ 会在 `positional_embeddings` 处形状错（"跑几百步才遇到"的静默坑）。已改为截断到最近 `len_seq` 个。
+- 接线：`rl_run0.sh` 新增 `CF_PATH` / `ADA_PATH` 两个 env（原先只有 `REWARD_TYPE`，`--cf_path` 传不进去
+  ⟹ `reward_type=sasrec` 必然报"需要 --cf_path"）。`bash -n` ✓、`audit_shell_unbound.py` exit 0 ✓。
+- ⚠️ `models/` 被 gitignore ⟹ 权重走不了 git。云端用同一脚本 `git pull` 后跑 3 分钟即可（推荐），
+  或用 autodl 上传本地的 13 MB 文件。
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：

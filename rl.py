@@ -315,15 +315,25 @@ def train(    # model/data params
         print(f"[mem] reward_type={reward_type} 不需要额外模型副本，跳过 llm_model 加载"
               f"（省约 1.14 GiB）  device={device}")
     
-    len_seq = 10
+    # Reward Model（reward_type="sasrec"）的架构常量。
+    # 🔴 必须与 `scripts/rl/train_sasrec_cf.py` 的默认值**逐项一致** —— 不一致时 `load_state_dict`
+    #    会因张量形状不符直接报错（这是有用的兜底，不是静默错）。
+    # `[实测]` 曾用 hidden=32/state=10/heads=1 训出的 RM 只有 valid HR@10=0.0134（同数据下
+    #   baseline 那份是 0.0494）⟹ 架构是瓶颈，加 epoch 无效（25 ep 反而过拟合到 0.0066）。
+    CF_HIDDEN = 64
+    CF_LEN_SEQ = 20
+    CF_DROPOUT = 0.3
+    CF_HEADS = 2
+
+    len_seq = CF_LEN_SEQ
     item_num = len(item_name)
     print(f"item_num: {item_num}")
 
     if reward_type == "sasrec":
         if not cf_path or not os.path.exists(cf_path):
             raise ValueError(f"reward_type='sasrec' 需要 --cf_path（SASRec 的 state_dict），"
-                             f"当前 cf_path={cf_path!r}。本仓尚无该权重，需先用根目录 sasrec.py 训练。")
-        model = SASRec(32, item_num, len_seq, 0.3, device)
+                             f"当前 cf_path={cf_path!r}。用 scripts/rl/train_sasrec_cf.py 训练。")
+        model = SASRec(CF_HIDDEN, item_num, len_seq, CF_DROPOUT, device, num_heads=CF_HEADS)
         model.to(device)
         model.load_state_dict(torch.load(cf_path))
         model.eval()
@@ -419,6 +429,12 @@ def train(    # model/data params
         history_ids = []
         for his in history_list:
             his = [item2id[elm] for elm in his]
+            # 🔴 [2026-09-27 修] 原代码只 pad 不截断；而 SASRec 的 positional_embeddings
+            #    是 Embedding(state_size=10)，历史超过 10 会在 forward 时形状不匹配而崩。
+            #    `[实测]` IandS 的 history 最长 = 20 ⟹ 必然触发（且是"跑几百步才遇到"的静默坑）。
+            #    截断到**最近** len_seq 个，与训练脚本 scripts/rl/train_sasrec_cf.py 完全一致。
+            if len(his) > len_seq:
+                his = his[-len_seq:]
             len_lis.append(len(his))
             if len(his) < len_seq: 
                 his = his + [item_num] * (len_seq - len(his))

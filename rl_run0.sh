@@ -72,6 +72,9 @@ NUM_GENERATIONS="${NUM_GENERATIONS:-4}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-16}" # 3 SID + \n + EOS 只需 5，留头寸
 REWARD_TYPE="${REWARD_TYPE:-rule}"                   # UPGRADE_PLAN §6 的 R0 锚点 = rule
+# reward_type=sasrec / semantic 需要外部权重（缺了会直接 raise，不静默）
+CF_PATH="${CF_PATH:-}"                               # SASRec state_dict（RM），scripts/rl/train_sasrec_cf.py 产出
+ADA_PATH="${ADA_PATH:-}"                             # item embedding pickle（semantic 奖励用）
 
 # [本项目新增] RL 数据集构成 —— 用于"训练与评估同一批用户"的小规模迭代
 #   RL_TASKS：T1,T2,T3 的子集。默认三者全开 = 原版行为。
@@ -260,6 +263,8 @@ echo "=========================================="
   --temperature "${TEMPERATURE}" \
   --max_completion_length "${MAX_COMPLETION_LENGTH}" \
   --reward_type "${REWARD_TYPE}" \
+  --cf_path "${CF_PATH}" \
+  --ada_path "${ADA_PATH}" \
   --rl_tasks "${RL_TASKS}" \
   --rl_t2_sample "${RL_T2_SAMPLE}" \
   --rl_t3_sample "${RL_T3_SAMPLE}" \
