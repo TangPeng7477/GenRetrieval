@@ -822,7 +822,17 @@ GRAD_ACC_STEPS=4 SYNC_REF_MODEL=True NUM_TRAIN_EPOCHS=2`
 |---|---|---|---|---|
 | R1 | `REWARD_TYPE=ranking`（其余同 u5k） | 纯 A/B 对齐原版验证配置；组内含命中即有方差（无死角） | 1 epoch ~50 min | **明天先跑** |
 | R2 | R1 + `NUM_GENERATIONS=16`（B=32/GA=4 保 32 序列/步） | 组内含正例概率 ≈1-(1-p)^G，4→16 约 4×；SIDReasoner 也用 rollout 16 | ~2-3× R1 | R1 平了再跑 |
-| R3 | **NLL/困惑度连续奖励**（LatentR3, arXiv 2505.19092） | 用 target SID 在策略下的 teacher-forced NLL 当连续奖励——**每条样本都有值**，彻底免采样命中；该文还把 group-relative 改 batch-relative | 需实现（½天） | R1/R2 平了做 |
+| R3 | **NLL/困惑度连续奖励**（LatentR3, arXiv 2505.19092） | 用 target SID 的 teacher-forced NLL 当连续奖励 | 需**改 advantage 计算** | **降级为末选**（见下） |
+| **R6** | **`cf_reward`（`reward_type=sasrec`，`rl.py:403`）** | **SASRec 给 rollout 解码出的 item 打分** ⟹ 依赖 rollout ✓、连续稠密 ✓、**协同信号是 SFT 没见过的新信息源** ✓ | 先用 `sasrec.py` 训 SASRec 得 `--cf_path` | **首选** |
+| **R7** | **`dynamic_sampling=True`（DAPO，`rl.py:87` 已有开关）** | 跳过"零方差组"重新采样 ⟹ 提高有效梯度密度，**不改奖励形状**，可与任何奖励叠加 | 一行 env | **次选（零成本）** |
+| R8 | `semantic_reward`（`rl.py:387`）：cos(item emb[target], item emb[rollout]) | 稠密 + rollout 敏感；需 `--ada_path`（可用 Qwen3-Embedding 或 SID codebook 拼） | 造 embedding，½天 | 备选 |
+
+🔴 **R3 的重要修正（2026-09-27）**：我此前写"NLL 每条样本都有值 ⟹ 彻底解决稀疏"——**不完整**。
+GRPO 的 `advantage = (r_i − mean_group) / std_group` ⟹ **奖励必须依赖 rollout**；
+而 target 的 NLL 只依赖 `prompt + target`，**与 rollout 无关** ⟹ 组内 4 条值完全相同 ⟹ 方差 0 ⟹ **零梯度**。
+LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch 均值做 baseline）——
+改完本质已是 REINFORCE+baseline，不再是标准 GRPO。
+⟹ **"每条样本都有值" ≠ "有梯度"**，这是选奖励时的第一判据。
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：
