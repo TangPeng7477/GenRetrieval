@@ -947,6 +947,73 @@ reward 均值 前 500 步 = 2.178   ⟶  全程 3.233（后 4,850 步 ≈ 3.342�
 
 🔧 注：组内 advantage 对**仿射变换不变** ⟹ 给 cf 做标准化**不会**改变它单独使用时的梯度，
 只有在**与 rule 组合**时，标准化才决定两者的相对权重 —— 所以 1 里必须先标准化再加权。
+
+**✅ 方案 1 已实现（2026-09-27 晚）：两个新 reward_type + `cf_weight` 参数**
+
+```python
+"sasrec_rule"  -> [rule_reward, cf_scaled_reward]                    # 两项（推荐先跑）
+"ranking_cf"   -> [rule_reward, ndcg_rule_reward, cf_scaled_reward]  # 三项
+cf_scaled_reward = z(cf) * cf_weight      # cf_weight 默认 0.3（fire 参数，可命令行覆盖）
+```
+
+**归因实测（模拟真实量级：cf~N(2.3, 2)、rule 命中率 ~3%、ndcg ±0.019，batch=32）**：
+
+| 配置 | rule 贡献 | ndcg 贡献 | cf 贡献 |
+|---|---:|---:|---:|
+| **不标准化**直接 rule+0.3·cf | 14.5% | — | **85.5%（主导）** |
+| 标准化 + λ=0.3 | 35% | 5% | 77% |
+| 标准化 + λ=1.0 | 9% | 5% | **97%** |
+
+⟹ 三个结论：① **必须先标准化**（否则 cf 以 85% 主导，rule 被淹没——这就是 u5ks 失败的机制）；②
+λ=0.3 下 rule 占 35%，target 锚定有效；③ **ndcg 项基本陪跑**（量级 ±0.02，只占 5%）——
+"三项一起"与"两项"在梯度上几乎等价，想要 ndcg 有话语权得放大它的量级（暂不做）。
+
+**跑法**（同 u5ks 口径，2 epoch，判据 HR@10 对 0.0342；另盯末端 `kl`，期望 <0.15）：
+    REWARD_TYPE=sasrec_rule CF_PATH=models/sasrec_IandS_cf.pt RUN_TAG=u5ksr ...   # 推荐：单变量
+    REWARD_TYPE=ranking_cf  CF_PATH=models/sasrec_IandS_cf.pt RUN_TAG=u5krc ...   # 三项版
+λ 调节：`--cf_weight`（fire 参数；调大 ⟹ 协同信号话语权变大）。
+
+## 6.9.2 MiniOneRec 论文对照（arXiv:2510.24431，2026-09-27 通读原文后补记）
+
+**最关键的发现：我们在 u5ks 上独立复现了论文自己的负结果（§5.5.3）。**
+论文尝试了 **"MiniOneRec-w/ COLLABORATIVE"：把 ranking 项替换成冻结 SASRec 的 logits**
+（与我们 `cf_reward` 几乎同一设计），结论逐字引用：
+
+> "injecting the collaborative reward information into the RL process instead led to significant
+> degradation. We hypothesize that this stems from **reward hacking**: as recommendation accuracy
+> declines, the reward continues to increase, revealing a misalignment between this collaborative
+> reward signal and the true objective."
+
+⟹ 与我们的 u5ks 完全同构：reward 涨（我们 +53%）、HR 不涨。**两条独立证据链指向同一结论**
+⟹ `cf_reward` 单独使用这条路**正式关闭**（论文+我们都证伪）；也说明诊断（target-free ⟹ hacking）
+不是我们的配置问题，是该奖励设计的固有缺陷。
+
+**论文自己的消融排序（§5.5.3，Figure 4c）**：
+`完整版（rule + rank 惩罚）` > `w/ ACC（纯 0/1）` > `w/ COLLABORATIVE（SASRec logits）`。
+⟹ **`ranking`（我们 u5kr/u5kr2/u5kr3 用的）就是论文验证的最优奖励** —— 与我们"ranking 3ep 追平锚点"
+一致；也意味着**在奖励形状这条线上，论文已替我们做完消融**，`sasrec_rule`/`ranking_cf`
+（rule 锚定 + λ·z(cf) 辅助）是论文**没试过**的配置，可以试但预期要放低。
+
+**其余要点（与我们 pipeline 的逐项对照）**：
+
+| 项 | 论文 | 我们 | 一致? |
+|---|---|---|---|
+| SID | RQ-VAE，L=3、K=256（24 位码空间） | 同 | ✓ |
+| 骨干 | Qwen2.5-Instruct 0.5B~7B | Qwen2.5-0.5B / Qwen3-0.6B | ✓ |
+| SFT | 全程 alignment 任务（推荐任务 + SID↔文本桥接任务**贯穿 SFT 与 RL**） | T1~T3 混训 | ✓ |
+| RL 采样 | **constrained beam search，width 16**（对比过 dynamic sampling，beam 赢在性价比） | beam_search=True，G=**4** | ✗ → R2（G=16）有论文背书 |
+| RL 超参 | GRPO 2 epoch、lr 1e-5、batch 512（8×H100） | 2~3 epoch、lr 1e-5、有效 32 prompt/步 | ✓（尺度不同） |
+| 奖励 | **默认 = rule + rank 惩罚**：对负例按其生成概率排名 ρ 给 −1/log(ρ+1)，组内归一化 | `ranking`（ndcg_rule_reward） | ✓ 同一设计 |
+| KL | β 与 SFT 阶段保持不变 | β=1e-3 | ✓ |
+
+**数字不可横比（再确认一次）**：论文 Industrial = **Amazon 2018、3,686 items**（Table 1：
+SASRec HR@10 0.1088、TIGER 0.1321、LC-Rec 0.1332、MiniOneRec **0.1586**）；
+我们 IandS = **Amazon 2023、25,847 items**（SFT 0.0342）。论文里 SASRec 都有 0.11，
+正是"小目录 + 同协议"的量级 —— 与我们 EVAL_PROTOCOL 的结论（不可横比）互为印证。
+
+**一个值得学的细节**：论文 rank 惩罚的分母是 `Σ_j R̃_rank(e_j)`（组内归一化），
+且排名 ρ 用的是**生成概率**的排名（不是 beam 内位置）⟹ 与我们 `ndcg_rule_reward` 的实现
+（NDCG 式）略有差异，效果同向。
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：
