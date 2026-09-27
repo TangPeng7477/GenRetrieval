@@ -9,7 +9,10 @@ from torch.utils.data import ConcatDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 from minionerec_trainer import ReReTrainer
-from sasrec import SASRec
+from sasrec import SASRec                       # 根实现（旧 RM，--net root 时用）
+# Reward Model 用 **baseline 的 SASRecNet**（2 层 + 共享 item embedding 输出头 + 左填充）。
+# 🔴 必须与 scripts/rl/train_sasrec_cf.py 的默认 --net baseline 配套，见 rl.py 里 CF_* 注释。
+from baseline.models.seq import SASRecNet
 # 🔴 复用 sft.py 的逗号参数解析器（单一实现，别在本文件重写一份）：
 #    fire 会把命令行 `a,b,c` 解析成 **tuple**，直接 str(v).split(",") 会得到脏元素。
 #    这个 bug 在 SFT 侧实测踩过（见 sft.py:147 的注释），RL 侧新增的 LoRA 参数同源。
@@ -318,12 +321,22 @@ def train(    # model/data params
     # Reward Model（reward_type="sasrec"）的架构常量。
     # 🔴 必须与 `scripts/rl/train_sasrec_cf.py` 的默认值**逐项一致** —— 不一致时 `load_state_dict`
     #    会因张量形状不符直接报错（这是有用的兜底，不是静默错）。
-    # `[实测]` 曾用 hidden=32/state=10/heads=1 训出的 RM 只有 valid HR@10=0.0134（同数据下
-    #   baseline 那份是 0.0494）⟹ 架构是瓶颈，加 epoch 无效（25 ep 反而过拟合到 0.0066）。
+    # `[实测]` 版本史（别退回旧配置）：
+    #   · 根 sasrec.py 的 SASRec + 1 负例 BCE        -> valid HR@10 0.0134
+    #   · 同上改全库 softmax CE                       -> 0.0192
+    #   · 换 baseline 的 SASRecNet（本版）            -> 见 scripts/rl/train_sasrec_cf.py 的运行输出
+    # 🔴 差 2.5× 的根因（核源码所得，不是猜）：
+    #   ① 根 sasrec.py 的 SASRec **只有 1 层** attention（self.mh_attn 是单个模块、非 ModuleList）
+    #      —— 传 num_heads 只改头数、层数恒为 1；baseline 是 n_layers=2。
+    #   ② 根实现用独立 Linear 输出头 `s_fc(hidden->item_num)`；baseline 用**共享 item embedding
+    #      做 dot-product**。
+    #   ③ 根实现右填充 + gather(len-1)；baseline **左填充**（末位恒在 maxlen-1，位置语义一致）。
+    #   ④ `[实测]` 评估是否 mask_seen **不是主因**（只值 +0.0004）。
     CF_HIDDEN = 64
     CF_LEN_SEQ = 20
-    CF_DROPOUT = 0.3
+    CF_DROPOUT = 0.2
     CF_HEADS = 2
+    CF_LAYERS = 2
 
     len_seq = CF_LEN_SEQ
     item_num = len(item_name)
@@ -333,7 +346,10 @@ def train(    # model/data params
         if not cf_path or not os.path.exists(cf_path):
             raise ValueError(f"reward_type='sasrec' 需要 --cf_path（SASRec 的 state_dict），"
                              f"当前 cf_path={cf_path!r}。用 scripts/rl/train_sasrec_cf.py 训练。")
-        model = SASRec(CF_HIDDEN, item_num, len_seq, CF_DROPOUT, device, num_heads=CF_HEADS)
+        # 🔴 用 **baseline 的 SASRecNet**（与训练脚本默认 --net baseline 一致）；
+        #    pad_id 必须取 item_num（真实 item id 之外的额外槽位）。
+        model = SASRecNet(item_num, pad_id=item_num, maxlen=len_seq, hidden=CF_HIDDEN,
+                          n_layers=CF_LAYERS, n_heads=CF_HEADS, dropout=CF_DROPOUT)
         model.to(device)
         model.load_state_dict(torch.load(cf_path))
         model.eval()
@@ -429,22 +445,24 @@ def train(    # model/data params
         history_ids = []
         for his in history_list:
             his = [item2id[elm] for elm in his]
-            # 🔴 [2026-09-27 修] 原代码只 pad 不截断；而 SASRec 的 positional_embeddings
-            #    是 Embedding(state_size=10)，历史超过 10 会在 forward 时形状不匹配而崩。
-            #    `[实测]` IandS 的 history 最长 = 20 ⟹ 必然触发（且是"跑几百步才遇到"的静默坑）。
-            #    截断到**最近** len_seq 个，与训练脚本 scripts/rl/train_sasrec_cf.py 完全一致。
+            # 🔴 [2026-09-27 修] 原代码只 pad 不截断；SASRec 的位置编码表只有 len_seq 行，
+            #    历史超过 len_seq 会在 forward 时形状不匹配而崩。
+            #    `[实测]` IandS 的 history 最长 = 20 ⟹ 必然触发（"跑几百步才遇到"的静默坑）。
+            #    截断到**最近** len_seq 个，与训练脚本 scripts/rl/train_sasrec_cf.py 一致。
             if len(his) > len_seq:
                 his = his[-len_seq:]
             len_lis.append(len(his))
-            if len(his) < len_seq: 
-                his = his + [item_num] * (len_seq - len(his))
+            # 🔴 必须与训练脚本的填充方向一致：baseline 的 SASRecNet 是**左填充**
+            #    （历史靠右、pad 在左），模型恒取 `[:, -1]` —— 若这里补在右侧，
+            #    末位就变成 pad，打分全废（静默变随机，不报错）。
+            his = [item_num] * (len_seq - len(his)) + his
             history_ids.append(his)
         
         seq = torch.LongTensor(history_ids).to(device)
         pred = torch.LongTensor(pred_ids).to(device)    
         
         with torch.no_grad():
-            predictions = model.forward_eval(seq, torch.tensor(np.array(len_lis)).to(device))
+            predictions = model.logits(seq)               # [B, item_num]
             scores = torch.gather(predictions, 1,  pred.view(-1, 1)).view(-1)
         return scores
     

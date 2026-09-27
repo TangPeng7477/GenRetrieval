@@ -835,8 +835,9 @@ LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch �
 ⟹ **"每条样本都有值" ≠ "有梯度"**，这是选奖励时的第一判据。
 
 **R6 的准备情况（`[实测]` 2026-09-27 本地 3050Ti 训练，脚本 `scripts/rl/train_sasrec_cf.py`）**
-- 权重：`models/sasrec_IandS_cf.pt`（13 MB，`SASRec(hidden=64, state=20, heads=2)` 3.36M 参数），
-  **best epoch 7：valid HR@10 = 0.0192 / NDCG@10 = 0.0115**（全库排序、未 mask）。
+- 权重：`models/sasrec_IandS_cf.pt`（**6.7 MB**，`SASRecNet(hidden=64, layers=2, heads=2, maxlen=20)` 1.76M）。
+  ⚠️ 下面两行是 **v2（根 sasrec.py，已被 v3 取代）** 的旧记录，保留作版本史：best epoch 7
+  valid HR@10 = 0.0192 / NDCG@10 = 0.0115（全库排序、未 mask、文件头 5,000 行）。
 - 对照：baseline 那份 `baseline/results/IandS/sasrec` 是 **HR@10 0.0494 / NDCG@10 0.029**
   ⟹ 我们这份 **约为其 40%**（但比随机高 ~48×，作奖励模型可用；想要更强需 2 block 架构）。
 - 🔴 两个必须记住的坑（都已修）：
@@ -852,6 +853,31 @@ LatentR3 的解法是**把 group-relative 换成 batch-relative**（用 batch �
   ⟹ `reward_type=sasrec` 必然报"需要 --cf_path"）。`bash -n` ✓、`audit_shell_unbound.py` exit 0 ✓。
 - ⚠️ `models/` 被 gitignore ⟹ 权重走不了 git。云端用同一脚本 `git pull` 后跑 3 分钟即可（推荐），
   或用 autodl 上传本地的 13 MB 文件。
+**✅ 2.5× 差距的根因已复现（2026-09-27 下午，v3：改用 baseline 的 `SASRecNet`）**
+
+`[实测]` **best epoch 6：mask_seen valid HR@10 = 0.0513 / NDCG@10 = 0.0300** ——
+与 baseline 那份（HR@10 0.0517 / NDCG@10 0.0300）**逐位重合**。权重 `models/sasrec_IandS_cf.pt`（6.7 MB）。
+
+差距由三件事叠加，按贡献排序：
+
+| # | 差异 | 影响 |
+|---|---|---|
+| 1 | **层数**：根 `sasrec.py` 的 SASRec **只有 1 层** attention（`self.mh_attn` 是单个模块、非 ModuleList）——传 `num_heads=2` 只改**头数**，层数恒为 1；baseline 是 `n_layers=2` | 主因 |
+| 2 | **输出头**：根实现用独立 `Linear(hidden→item_num)`（`s_fc`，占其 3.36M 参数的一半）；baseline 用**共享 item embedding 做 dot-product** | 主因 |
+| 3 | **评估口径**：我拿前 5,000 行当 valid，而那是**文件头子样本**（`mean|hist|` 6.32 vs 全量 5.78）⟹ 低估约 13%；baseline 用全量 50,984 + `mask_seen` | 0.0472 → 0.0376 |
+
+🔴 两个被我自己排除的假设（都实测过，别再猜）：
+- **不是** `mask_seen` 本身：拿 v2 权重实测，不屏蔽 0.0192 → 屏蔽 history 0.0196 → 屏蔽 history∪train_seq **0.0196**（只值 +0.0004）。
+- **不是** 数据：两边 train/valid 逐行一致（valid.inter 与 sft valid CSV 的 mean|hist| 都是 5.78），
+  且 v3 与 baseline 的 train loss **逐轮几乎相同**（9.6440/8.9044/8.3343/7.7983 vs 9.6567/8.9343/8.3626/7.8176）。
+
+⚠️ **选 epoch 的 monitor 必须用 mask_seen 那一版**：baseline 的 `valid_fn` 走 `evaluate` 默认
+`mask_seen=True`。用不屏蔽的 NDCG 选会**选早**（`[实测]` 不屏蔽的峰在 ep3=0.0228、mask_seen 的峰在
+ep6=0.0300）⟹ 存下的权重差 9%（ep3 HR@10 0.0472 vs ep6 **0.0513**）。脚本已加 `--monitor-seen`（默认 1）。
+
+🔴 配套改动：`rl.py` 的 `cf_reward` 必须**左填充**（`[item_num]*(len_seq-n) + his`）并调 `model.logits(seq)`；
+若仍按旧代码补在右侧，末位就变成 pad，打分全废**（静默，不报错）**。`rl.py` 的 `CF_*` 已同步为
+64 / 20 / 0.2 / 2 / 2（含新增 `CF_LAYERS`），模型类换成 `baseline.models.seq.SASRecNet`。
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：
