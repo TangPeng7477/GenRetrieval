@@ -1044,6 +1044,33 @@ SASRec HR@10 0.1088、TIGER 0.1321、LC-Rec 0.1332、MiniOneRec **0.1586**）；
 
 跑法（云端，锚点 vs 任一 RL run）：
 ```bash
+python scripts/rl/paired_eval_compare.py   --a results/sft/IandS-all/eval_IandS_beam50_u5k.json   --b results/sft/IandS-u5kr3/eval_IandS_beam50_u5k.json
+```
+（也可只写 `--a IandS-all --b IandS-u5kr3`，脚本自动拼路径。）
+
+**怎么读**（判据写死在输出里）：
+
+| 观察 | 结论 | 下一步 |
+|---|---|---|
+| b ≈ c 且**都很小**（翻转 <20 行） | **模型几乎没动** ⟹ RL 没改变行为 | 查优化设置：lr / 有效更新次数 / KL / 奖励尺度 |
+| b ≈ c 但**都很大** | **churn**（来回翻、净增益 0） | 奖励只在制造噪声 ⟹ 换奖励或收口 |
+| b ≫ c | RL 有净增益、被丢命中抵消 | 做 badcase：翻坏的是哪类样本 |
+| b 或 c 显著（p<0.05） | 真有方向性变化 | 按方向决定加码/回退 |
+
+`[实测]` 脚本自检（合成 fixture：A 丢 30 行落在 B 的命中区、B 丢 10 行落在 A 的命中区）
+⟹ 输出 `b=30 c=10 p=0.002`，与用 `math.comb` 独立复算的 p 值**逐位一致** ✓。
+另附：集合 churn（前 10 条预测的 Jaccard / 完全相同行占比）、近失分析
+（target 的 SID 前缀 1/2 层是否出现在预测里）、命中位次分布（区分"top1 命中"与"擦边进 top10"）。
+
+**🔬 逐行配对分析（零成本，已就绪）：`scripts/rl/paired_eval_compare.py`（2026-09-30）**
+
+我们 7 个 run 的**边际 HR@10** 全落在 0.0328~0.0342（±0.5σ），但**"边际率相同" ≠ "输出没变"**：
+两次评估可以在同一批 5,000 行上逐行翻来翻去、净增益为零。这两种解释导向完全不同的下一步。
+该脚本用**同一批行配对 + McNemar 精确检验**（只看不一致对 b/c，消掉样本间方差），
+比比较两个边际率的置信区间灵敏得多 —— 不需要 GPU，只读已有的 eval dump。
+
+跑法（云端，锚点 vs 任一 RL run）：
+```bash
 python scripts/rl/paired_eval_compare.py \
   --a results/sft/IandS-all/eval_IandS_beam50_u5k.json \
   --b results/sft/IandS-u5kr3/eval_IandS_beam50_u5k.json
