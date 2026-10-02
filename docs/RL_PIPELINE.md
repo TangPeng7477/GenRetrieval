@@ -1044,33 +1044,6 @@ SASRec HR@10 0.1088、TIGER 0.1321、LC-Rec 0.1332、MiniOneRec **0.1586**）；
 
 跑法（云端，锚点 vs 任一 RL run）：
 ```bash
-python scripts/rl/paired_eval_compare.py   --a results/sft/IandS-all/eval_IandS_beam50_u5k.json   --b results/sft/IandS-u5kr3/eval_IandS_beam50_u5k.json
-```
-（也可只写 `--a IandS-all --b IandS-u5kr3`，脚本自动拼路径。）
-
-**怎么读**（判据写死在输出里）：
-
-| 观察 | 结论 | 下一步 |
-|---|---|---|
-| b ≈ c 且**都很小**（翻转 <20 行） | **模型几乎没动** ⟹ RL 没改变行为 | 查优化设置：lr / 有效更新次数 / KL / 奖励尺度 |
-| b ≈ c 但**都很大** | **churn**（来回翻、净增益 0） | 奖励只在制造噪声 ⟹ 换奖励或收口 |
-| b ≫ c | RL 有净增益、被丢命中抵消 | 做 badcase：翻坏的是哪类样本 |
-| b 或 c 显著（p<0.05） | 真有方向性变化 | 按方向决定加码/回退 |
-
-`[实测]` 脚本自检（合成 fixture：A 丢 30 行落在 B 的命中区、B 丢 10 行落在 A 的命中区）
-⟹ 输出 `b=30 c=10 p=0.002`，与用 `math.comb` 独立复算的 p 值**逐位一致** ✓。
-另附：集合 churn（前 10 条预测的 Jaccard / 完全相同行占比）、近失分析
-（target 的 SID 前缀 1/2 层是否出现在预测里）、命中位次分布（区分"top1 命中"与"擦边进 top10"）。
-
-**🔬 逐行配对分析（零成本，已就绪）：`scripts/rl/paired_eval_compare.py`（2026-09-30）**
-
-我们 7 个 run 的**边际 HR@10** 全落在 0.0328~0.0342（±0.5σ），但**"边际率相同" ≠ "输出没变"**：
-两次评估可以在同一批 5,000 行上逐行翻来翻去、净增益为零。这两种解释导向完全不同的下一步。
-该脚本用**同一批行配对 + McNemar 精确检验**（只看不一致对 b/c，消掉样本间方差），
-比比较两个边际率的置信区间灵敏得多 —— 不需要 GPU，只读已有的 eval dump。
-
-跑法（云端，锚点 vs 任一 RL run）：
-```bash
 python scripts/rl/paired_eval_compare.py \
   --a results/sft/IandS-all/eval_IandS_beam50_u5k.json \
   --b results/sft/IandS-u5kr3/eval_IandS_beam50_u5k.json
@@ -1090,6 +1063,41 @@ python scripts/rl/paired_eval_compare.py \
 ⟹ 输出 `b=30 c=10 p=0.002`，与用 `math.comb` 独立复算的 p 值**逐位一致** ✓。
 另附：集合 churn（前 10 条预测的 Jaccard / 完全相同行占比）、近失分析
 （target 的 SID 前缀 1/2 层是否出现在预测里）、命中位次分布（区分"top1 命中"与"擦边进 top10"）。
+
+**🚫 vLLM / LLaMA-Factory 可行性与真正的加速杠杆（2026-10-02 核代码后定案）**
+
+**现状**：我们**没有**用它们。训练栈 = HF Transformers 4.57 + TRL 0.24 的 `GRPOConfig` +
+自研 `ReReTrainer`（继承 `GRPOTrainer`）+ 自定义 `ConstrainedLogitsProcessor`（Trie 约束）
++ HF `model.generate(num_beams=G, logits_processor=...)`；评估侧同样是 HF beam search。
+（`peft 0.14` 有装但 RL 用 `USE_LORA=False`；`vllm` 与 `flash-attn` **均未安装**。）
+
+**`minionerec_trainer.py` 里确实有 TRL 自带的 vLLM 代码路径**（`if self.args.use_vllm:` →
+`self.llm.generate(..., sampling_params=self.sampling_params)`），但对我们**不可用**，三条硬阻断：
+
+| # | 阻断 | 后果 |
+|---|---|---|
+| 1 | `use_vllm=True` 会走 `is_vllm_available()` 检查（`minionerec_trainer.py:419`），当前未装 ⟹ 直接 `RuntimeError` | 需装 vLLM（约 2 GB 依赖） |
+| 2 | **vLLM 分支不带 `ConstrainedLogitsProcessor`** —— `self.logits_processor` 只传给 HF 的 `generate`；vLLM 分支只用 `sampling_params` | **Trie 约束解码丢失** ⟹ 可能吐非法 SID ⟹ 奖励与 HR 评估全部失真 |
+| 3 | vLLM 分支是**采样**（`n=num_generations`），我们要 **beam search**（论文消融过 beam 优于 sampling：组内零重复 + 更省算力）；且 vLLM v1 **已移除 beam search** | 用 vLLM = 同时换掉「采样策略」+「合法性保证」⟹ **换实验，不是加速** |
+
+**LLaMA-Factory**：定位是 SFT/DPO 微调工程化框架，**不提供 GRPO rollout 加速**，
+也无法注入我们的 logits processor ⟹ 与我们无关（价值在多卡 SFT / 量化，而我们 SFT 已跑完）。
+
+**真正可用的加速杠杆（不改变实验语义）**：
+1. **摊薄 `generate` 调用次数**（已验证有效）：`B↑ / GA↓` 且保持 `B×GA` 不变 ⟹ util 27%→85%；
+   还能再试 `B=32 / GA=1`（每步调用数再减半）。
+2. **装 `flash-attn`**：日志每次都在打 `flash-attn not found, using PyTorch SDPA`
+   ⟹ 装上可加速 attention；⚠️ beam 会 expand KV，flash-attn 与 beam 的兼容性需实测。
+3. **`torch_compile=True`**：目前显式关掉；compile 能削掉 generate 的 Python 开销，
+   但 beam 的 reshape 可能触发重编译 ⟹ 收益要实测，不是必然。
+4. **`max_completion_length` 16 → 8**：SID 只需 5 token（3 SID + 换行 + eos）⟹ KV cache 预留减半；
+   收益有限但零风险。
+5. **评估侧并行分片**：`evaluate.py` beam=50 × 5,000 行 = 19 min/次（峰值 15.6 GB），
+   已跑 8 次 ≈ 2.5 h 纯评估；按行分片到多进程（`BATCH_SIZE=12` 不变）可近线性加速，
+   **不改口径**（beam 内排名逐行独立）⟹ 唯一零风险且立刻见效的一项。
+
+⟹ **结论**：vLLM / LLaMA-Factory 对我们这套（beam + 约束解码）都不是可用的加速器；
+加速应集中在"减少 generate 调用次数"与"评估分片"这两条上。
 | R4 | **检索侧 top-K 命中奖励**：生成的 SID 前缀在索引里取 bucket，target ∈ bucket 按深度给分 | 把"精确 SID 匹配"放宽为"召回命中"——与业务指标同源；需要 `IandS.index.json`（已有） | 需实现（½天） | 备选 |
 
 **外部证据**：
