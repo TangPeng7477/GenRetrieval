@@ -57,6 +57,16 @@ def main(
     sid_vocab_path: str = "",   # [本项目新增] 非空则现场注册 SID 词表（dry-run / 未训练基座用）
     max_samples: int = 0,       # [本项目新增] 0=全部；>0 只随机取 N 条（dry-run 用，显著提速）
 
+    # ---- [本项目 2026-10-02 新增] 评估分片（数据并行，多进程各跑一片）----
+    # 🔴 切片必须落在 **batch 边界**上：本函数按 `BLOCK = ceil(行数/batch_size)` 分块，而
+    #    `evaluate()` **每块独立算 padding**（左填充 + attention_mask）⟹ 逐行结果只依赖**该批的组成**。
+    #    从 batch 边界切 ⟹ 每个 batch 的组成与不分片时**逐个相同** ⟹ 确定性 beam search（do_sample=False）
+    #    下结果逐位一致。`[实测]` 本机 40 行 / batch=2 / 2 分片：分片 vs 不分片逐行完全相同 ✓
+    #    ⚠️ 前提是**各分片的 batch_size 与不分片时相同**。为省显存而调小 batch_size 会改变批组成
+    #       ⟹ 那种情况下结果**需要重新对照**，不是"必然一致"（见 RL_PIPELINE 的分片段）。
+    num_shards: int = 1,        # 1 = 不分片（默认，行为与改动前逐位相同）
+    shard_index: int = 0,
+
     # ---- 解码采样（[本项目新增] 原本完全靠继承基座，不可控也不可见）----
     # 🔴 背景：本函数构造 GenerationConfig 时若**不传** do_sample，generate() 内部的
     #    `_prepare_generation_config` 会用**基座 generation_config.json 的非默认值**填充它。
@@ -223,6 +233,28 @@ def main(
     encodings = [val_dataset[i] for i in range(len(val_dataset))]
     # encodings = [val_dataset[i] for i in indexes]
     test_data = val_dataset.get_all()
+
+    # ---- [本项目 2026-10-02 新增] 评估分片：只保留本片的连续行（切在 batch 边界上）----
+    if num_shards > 1 or shard_index != 0:
+        if num_shards < 1:
+            raise ValueError(f"num_shards 必须 >= 1，收到 {num_shards}")
+        if not (0 <= shard_index < num_shards):
+            raise ValueError(f"shard_index 必须落在 [0, {num_shards})，收到 {shard_index}")
+        if max_samples > 0:
+            raise ValueError("分片与 max_samples 不能同时用：前者按连续行切、后者随机采样，语义冲突")
+        _R = len(encodings)
+        _nchunk = (_R + batch_size - 1) // batch_size          # 与下方 BLOCK 同一套分块口径
+        _per = (_nchunk + num_shards - 1) // num_shards
+        _c0 = min(shard_index * _per, _nchunk)
+        _c1 = min(_c0 + _per, _nchunk)
+        _a, _b = _c0 * batch_size, min(_R, _c1 * batch_size)
+        if _b <= _a:
+            raise ValueError(f"分片 {shard_index}/{num_shards} 为空（数据仅 {_nchunk} 个 batch）—— 分片数不能超过 batch 数")
+        encodings, test_data = encodings[_a:_b], test_data[_a:_b]
+        print(f"[分片] shard {shard_index}/{num_shards}：行 [{_a}, {_b})  共 {_b - _a} 行／{_c1 - _c0} 个 batch"
+              f"（全量 {_R} 行；batch_size={batch_size} 与不分片一致 ⟹ 每批组成不变）")
+    else:
+        print(f"[分片] 未分片：全部 {len(encodings)} 行，batch_size={batch_size}")
 
     model.config.pad_token_id = model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id

@@ -74,6 +74,26 @@ SID_VOCAB_PATH="${SID_VOCAB_PATH:-}"    # 仅 dry-run：非空则评估端现场
 #   自动走 FlashAttention-2 内核，**零额外依赖**（无需 flash_attn 包）。一般不用改。
 ATTN_IMPL="${ATTN_IMPL:-sdpa}"
 
+# ---------------- 评估分片（2026-10-02 新增；默认关 = 旧行为逐位不变） ----------------
+# EVAL_SHARDS=1（默认）：单进程，行为与改动前完全一致。
+# EVAL_SHARDS=N>1      ：起 N 个进程**各评一片**（数据并行；切片落在 batch 边界上，见 evaluate.py
+#                        的 num_shards —— 每个 batch 的组成与不分片时逐个相同 ⟹ 确定性 beam 下
+#                        结果逐位一致；[实测] 本机 40 行 / batch=2 / 2 片已逐行比对通过）。
+# 🔴 关键前提：**每个进程都会各自加载一份模型** ⟹ 显存 ≈ N ×（1.2 GB 权重 + 25 MB × 每批序列数）。
+#    现状 BATCH_SIZE=12 × beam50 = 600 序列 ≈ 15.6 GB ⟹ 单进程已是 24 GB 卡的极限，
+#    想并行**必须同时把每进程的 batch 降下来**（用 EVAL_SHARD_BATCH，或直接传小 BATCH_SIZE）：
+#      N=2 + B=6 → 2×(1.2+6.9) ≈ 16 GB ✓     N=3 + B=4 → 3×(1.2+4.6) ≈ 17 GB ✓
+#    ⚠️ 降 batch 会改变「每批组成」⟹ 结果**不再保证逐位一致**，需与不分片版对照一次
+#       （降 batch 本身不跑分片时也同样要对照，见 docs/RL_PIPELINE.md 分片段）。
+# ⚠️ 收益前提：只有评估时 GPU **没打满**时并行才有近线性加速。先跑一次 eval，另开终端看
+#    `nvidia-smi` 的 util —— 若已 ~100%，多进程只会互相抢卡。
+EVAL_SHARDS="${EVAL_SHARDS:-1}"
+EVAL_SHARD_BATCH="${EVAL_SHARD_BATCH:-}"   # 非空则各分片用这个 batch_size（默认沿用 BATCH_SIZE）
+case "${EVAL_SHARDS}" in
+  ''|*[!0-9]*) echo "[ERROR] EVAL_SHARDS 只接受正整数，收到 '${EVAL_SHARDS}'"; exit 1 ;;
+esac
+if [ "${EVAL_SHARDS}" -lt 1 ]; then echo "[ERROR] EVAL_SHARDS 必须 >= 1，收到 '${EVAL_SHARDS}'"; exit 1; fi
+
 # ---------------- 解码采样（口径开关，2026-09-19 新增） ----------------
 # 🔴 背景：evaluate.py 原来**不传** do_sample ⟹ HF 会用基座 generation_config.json 的
 #    `do_sample: true` 回填 ⟹ **一直在跑束采样（BEAM_SAMPLE）**，而本仓代码里看不见。
@@ -206,6 +226,7 @@ echo "              ${METRICS_JSON}"
 echo "=========================================="
 
 T_EVAL_0="$(date +%s)"
+if [ "${EVAL_SHARDS}" -le 1 ]; then
 "${PY}" ./evaluate.py \
   --base_model "${MODEL_PATH}" \
   --info_file "${INFO_FILE}" \
@@ -223,6 +244,66 @@ T_EVAL_0="$(date +%s)"
   --top_p "${TOP_P}" \
   --attn_impl "${ATTN_IMPL}" \
   2>&1 | tee "${EVAL_LOG}"
+else
+  # ---- 分片并行：N 个进程各评一片，全部结束后合并成 RESULT_JSON（后续 calc/meta/指标路径不变）----
+  _SB="${EVAL_SHARD_BATCH:-${BATCH_SIZE}}"
+  echo "[分片] EVAL_SHARDS=${EVAL_SHARDS}  每片 batch_size=${_SB}（不分片时是 ${BATCH_SIZE}）"
+  if [ "${_SB}" != "${BATCH_SIZE}" ]; then
+    echo "[分片] ⚠️ 每片 batch 与不分片不同 ⟹ 结果不保证逐位一致（第一批务必与不分片版对照一次）"
+  fi
+  mkdir -p "${OUT_DIR}" "${LOG_DIR}"
+  _pids=""
+  for _i in $(seq 0 $((EVAL_SHARDS - 1))); do
+    "${PY}" ./evaluate.py \
+      --base_model "${MODEL_PATH}" \
+      --info_file "${INFO_FILE}" \
+      --category "${CATEGORY}" \
+      --test_data_path "${TEST_FILE}" \
+      --result_json_data "${OUT_DIR}/_shard${_i}.json" \
+      --batch_size "${_SB}" \
+      --num_beams "${NUM_BEAMS}" \
+      --max_new_tokens "${MAX_NEW_TOKENS}" \
+      --length_penalty "${LENGTH_PENALTY}" \
+      --sid_vocab_path "${SID_VOCAB_PATH}" \
+      --max_samples "0" \
+      --do_sample "${DO_SAMPLE}" \
+      --temperature "${TEMPERATURE}" \
+      --top_p "${TOP_P}" \
+      --attn_impl "${ATTN_IMPL}" \
+      --num_shards "${EVAL_SHARDS}" \
+      --shard_index "${_i}" \
+      > "${LOG_DIR}/eval_${EVAL_TAG}.shard${_i}.log" 2>&1 &
+    _pids="${_pids} $!"
+  done
+  _SHARD_RC=0
+  for _p in ${_pids}; do wait "${_p}" || _SHARD_RC=1; done
+  cat "${LOG_DIR}"/eval_${EVAL_TAG}.shard*.log > "${EVAL_LOG}" 2>/dev/null
+  if [ "${_SHARD_RC}" -ne 0 ]; then
+    echo "[ERROR] 至少一个分片失败 —— 看 ${LOG_DIR}/eval_${EVAL_TAG}.shard*.log，本次不合并"
+    exit 1
+  fi
+  "${PY}" - "${OUT_DIR}" "${EVAL_SHARDS}" "${RESULT_JSON}" <<'PYSHARD'
+import io, json, os, sys
+out_dir, n, result = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+merged, per = [], []
+for i in range(n):
+    p = os.path.join(out_dir, "_shard%d.json" % i)
+    if not os.path.exists(p):
+        raise SystemExit("[ERROR] 缺分片产物：%s" % p)
+    with io.open(p, encoding="utf-8") as f:
+        rows = json.load(f)
+    if not rows:
+        raise SystemExit("[ERROR] 分片 %d 为空：%s" % (i, p))
+    per.append(len(rows))
+    merged.extend(rows)
+with io.open(result, "w", encoding="utf-8") as f:
+    json.dump(merged, f, indent=4)
+print("[分片] 各片行数 = %s  合计 = %d" % (per, len(merged)))
+print("[分片] 已合并 -> %s" % result)
+print("[分片] ⚠️ 核对：各片行数之和应等于不分片时的总行数（如 u5k 的 5,000）—— 1 个进程 = 1 片，"
+      "任何一片漏跑/为空都会在此暴露")
+PYSHARD
+fi
 T_EVAL_1="$(date +%s)"
 EVAL_SECONDS=$((T_EVAL_1 - T_EVAL_0))
 
